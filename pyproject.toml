@@ -1,0 +1,265 @@
+[build-system]
+requires = []
+backend-path = ['src']
+build-backend = 'build_backend'
+
+[tool.mypy]
+follow_imports = 'silent'  # https://github.com/python-lsp/pylsp-mypy/issues/81
+scripts_are_modules = true  # allow checking all scripts in one invocation
+explicit_package_bases = true
+mypy_path = 'src:test/common:bots'
+exclude = [
+    'tmp/',
+    'tools/vulture-suppressions/',
+    'vendor/',
+]
+
+[[tool.mypy.overrides]]
+ignore_missing_imports = true
+module = [
+    # run without submodules checked out
+    "cockpit._vendor.*",
+
+    # run without bots checked out
+    "lib.*",
+    "machine.*",
+    "task.*",
+    "testvm",
+
+    # run with bots checked out but its dependencies missing
+    "libvirt",
+    "libvirt_qemu",
+    "pika",
+
+    # run without pcp module types
+    "pcp",
+    "cpmapi",
+
+    # run without gobject-introspection (used from cockpit-client for Gtk)
+    "gi.*",
+
+    # these are used from various scripts meant to run on the host
+    "dbus",
+    "tracer.query",
+    "sos.*",
+    "vdo.*",
+]
+
+[[tool.mypy.overrides]]
+# https://github.com/python/mypy/issues/11401 prevents us from enabling strict
+# mode for a given set of files, so instead, we enable the corresponding set of
+# individual checks the files which are strictly typed.
+check_untyped_defs = true
+disallow_any_generics = true
+disallow_incomplete_defs = true
+disallow_subclassing_any = true
+disallow_untyped_calls = true
+disallow_untyped_decorators = true
+disallow_untyped_defs = true
+no_implicit_reexport = true
+strict_concatenate = true
+strict_equality = true
+warn_unused_ignores = true
+module = [
+    # src
+    'cockpit',
+    'cockpit._version',
+    'cockpit.channels.http_channel',
+    'cockpit.channels.metrics',
+    'cockpit.channels.pcp',
+    'cockpit.channels.stream',
+    'cockpit.channels.trivial',
+    'cockpit.misc.print',
+    'cockpit.jsonutil',
+    'cockpit.packages',
+    'cockpit.peer',
+    'cockpit.protocol',
+    'cockpit.superuser',
+    'cockpit.transports',
+    'cockpit.beipack',
+    'cockpit.samples',
+    'cockpit.misc.bootloader',
+
+    # test/common
+    'testlib',
+    'packagelib',
+    'netlib',
+    'storagelib',
+    'submanlib',
+    'js_coverage',
+    'webdriver_bidi',
+    'run-tests',
+
+    # test/pytest
+    'test.pytest.test_beiboot',
+    'test.pytest.test_packages',
+    'test.pytest.test_http_channel',
+]
+
+[tool.pylint]
+max-line-length = 118
+disable = [
+  "C0114",  # Missing module docstring
+  "C0115",  # Missing class docstring
+  "C0116",  # Missing function or method docstring
+  "R0902",  # Too many instance attributes
+  "R0903",  # Too few public methods
+  "R0913",  # Too many arguments
+  "R1705",  # Unnecessary "else" after "return"
+  "W0120",  # Else clause on loop without a break statement
+  "W1113",  # Keyword argument before variable positional arguments  (PEP-570 is Python 3.8)
+]
+
+[tool.ruff]
+exclude = [
+    ".git/",
+    "modules/",
+    "node_modules/",
+]
+line-length = 118
+preview = true
+src = []
+
+[tool.ruff.format]
+quote-style = "preserve"
+
+[tool.ruff.lint]
+select = [
+    "A",       # flake8-builtins
+    "B",       # flake8-bugbear
+    "C4",      # flake8-comprehensions
+    "D300",    # pydocstyle: Forbid ''' in docstrings
+    "DTZ",     # flake8-datetimez
+    "E",       # pycodestyle
+    "EXE",     # flake8-executable
+    "F",       # pyflakes
+    "FBT",     # flake8-boolean-trap
+    "G",       # flake8-logging-format
+    "I",       # isort
+    "ICN",     # flake8-import-conventions
+    "ISC",     # flake8-implicit-str-concat
+    "PIE",     # flake8-pie
+    "PLE",     # pylint errors
+    "PGH",     # pygrep-hooks
+    "PT",      # flake8-pytest-style
+    "RSE",     # flake8-raise
+    "RUF",     # ruff rules
+    "T10",     # flake8-debugger
+    "TC",     # flake8-type-checking
+    "UP032",   # f-string
+    "W",       # warnings (mostly whitespace)
+    "YTT",     # flake8-2020
+]
+ignore = [
+    "A003",  # Class attribute is shadowing a python builtin
+    "B011",  # Do not `assert False` (`python -O` removes these calls), raise `AssertionError()`
+    "E731",  # Do not assign a `lambda` expression, use a `def`
+    "PT011", # `pytest.raises(OSError)` is too broad
+    "RUF012", # Mutable class attributes should be annotated with `typing.ClassVar`
+    "TC001", # Move application import into a type-checking block
+    "TC002", # Move third-party import `..packages.Packages` into a type-checking block
+    "ICN001",  # ignore rule "import datetime as dt"
+]
+
+[tool.ruff.lint.flake8-pytest-style]
+fixture-parentheses = false
+mark-parentheses = false
+
+[tool.ruff.lint.isort]
+known-first-party = ["cockpit", "test.pytest"]
+
+[tool.ty.environment]
+extra-paths = ["src", "test/common", "bots"]
+
+[tool.pytest.ini_options]
+addopts = ['--strict-markers']  # cf. https://github.com/cockpit-project/cockpit/pull/18584#issuecomment-1490243994
+pythonpath = ["src", "test/common", "bots"]
+testpaths = ["test/pytest"]
+log_cli = true
+required_plugins = ["pytest-asyncio"]
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.pyright]
+strict = ["**"]
+extraPaths = ["src", "test/common", "bots"]
+
+[tool.vulture]
+paths = [
+   "src",
+   "test/pytest",
+   "tools/vulture_suppressions",
+]
+ignore_names = [
+   "do_*",
+   "pytest_*",
+   "test[A-Z0-9]*",
+   "pytestmark",
+]
+ignore_decorators = [
+   "@*.getter",
+   "@*.register_function",
+   "@bus.Interface.Method",
+   "@pytest.fixture",
+   "@pytest.hookimpl",
+]
+
+[tool.coverage.paths]
+source = ["src", "*/site-packages"]
+
+[tool.coverage.run]
+concurrency = ["multiprocessing"]
+source_pkgs = ["cockpit"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_lines = [
+  "pragma: no cover",  # default
+  "raise NotImplementedError",
+]
+
+[tool.tox]
+legacy_tox_ini = """
+[tox]
+envlist = lint,pytest
+isolated_build = True
+requires = virtualenv<20.22.0
+labels =
+  venv = py3{9,10,11,12,13,14}-pytest
+
+# The default test environments use system packages and never PyPI.
+[testenv:{lint,pytest}]
+sitepackages = True
+install_command = python3 -m pip install --no-index --no-build-isolation {opts} {packages}
+wheel_build_env = pkg
+
+# All other environments (names like py311-lint, py39-pytest, etc) are isolated
+# from the system and get their packages from PyPI, according to the specific
+# test environment being requested.  We build the wheel in a common environment.
+# These tests will not run the PCP tests as there is no wheel available.
+# https://github.com/performancecopilot/pcp/issues/2076
+[testenv]
+package = wheel
+wheel_build_env = venv-pkg
+skip_install = lint: True
+deps =
+  lint: mypy
+  lint: ruff
+  lint: vulture
+  pytest
+  pytest-asyncio
+  pytest: pytest-cov
+  pytest: pytest-timeout
+  pytest: pytest-xdist
+allowlist_externals = test/common/static-code
+setenv =
+  NO_QUNIT=1
+commands =
+  pytest: python3 -m pytest -opythonpath=test/common {posargs}
+  lint: test/common/static-code --tap
+"""
+
+[tool.codespell]
+skip = '*.map,*.xml,*.policy,*.key,*.svg,./po,./node_modules,./dist,./vendor,./LICENSES,./selinux,./test,./src,./pkg'
+ignore-words-list = 'outofdate,ND,bu,chage,re-uses,re-use,afile'
