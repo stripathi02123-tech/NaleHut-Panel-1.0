@@ -1,0 +1,7 @@
+name: cockpit-guide
+version: true
+title: Cockpit
+start_page: guide:index.adoc
+nav:
+- modules/guide/nav.adoc
+- modules/man/nav.adoc

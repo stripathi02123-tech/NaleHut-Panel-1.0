@@ -1,0 +1,10 @@
+= API: system
+:leveloffset: +1
+
+This package contains general components for basic control of a system.
+
+include::api-logs-html.adoc[]
+
+include::api-terminal-html.adoc[]
+
+:leveloffset: -1

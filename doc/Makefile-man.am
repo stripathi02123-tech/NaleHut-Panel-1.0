@@ -1,0 +1,60 @@
+EXTRA_DIST += \
+	doc/modules/man/pages/cockpit.1.adoc \
+	doc/modules/man/pages/cockpit-bridge.1.adoc \
+	doc/modules/man/pages/cockpit-desktop.1.adoc \
+	doc/modules/man/pages/cockpit-ws.8.adoc \
+	doc/modules/man/pages/cockpit-tls.8.adoc \
+	doc/modules/man/pages/cockpit.conf.5.adoc \
+	doc/modules/man/pages/pam_ssh_add.8.adoc \
+	doc/modules/man/partials/author.adoc \
+	doc/modules/man/partials/bugs.adoc \
+	$(NULL)
+
+MANPAGES = \
+	doc/output/man/cockpit.1 \
+	doc/output/man/cockpit-bridge.1 \
+	doc/output/man/cockpit-desktop.1 \
+	doc/output/man/cockpit-ws.8 \
+	doc/output/man/cockpit-tls.8 \
+	doc/output/man/cockpit.conf.5 \
+	doc/output/man/pam_ssh_add.8 \
+	$(NULL)
+
+if ENABLE_DOC
+
+ASCIIDOC_EXTENSIONS = \
+	doc/extensions/man-inline-macro.rb \
+	$(NULL)
+
+dist_noinst_DATA += \
+	$(ASCIIDOC_EXTENSIONS) \
+	$(NULL)
+
+man_MANS += \
+	$(MANPAGES) \
+	$(NULL)
+CLEANFILES += $(MANPAGES)
+
+# Some distros don't have asciidoctor and we need to prebundle the man pages
+EXTRA_DIST += $(MANPAGES)
+
+MAN_ASCIIDOC_ARGS = \
+	-a doctype="manpage" \
+	-a manmanual="cockpit" \
+	-a mansource="cockpit" \
+	$(patsubst %,-r $(srcdir)/%,${ASCIIDOC_EXTENSIONS}) \
+	$(NULL)
+
+MAN_PROC = mkdir -p doc/output/man/ && $(ASCIIDOCTOR) $(MAN_ASCIIDOC_ARGS) -b manpage -o $@ $<
+render-man:
+	mkdir -p doc/output/man
+	asciidoctor $(MAN_ASCIIDOC_ARGS) -b manpage -D doc/output/man doc/modules/man/pages/*.adoc
+
+doc/output/man/%: doc/modules/man/pages/%.adoc
+	$(AM_V_GEN) $(MAN_PROC)
+
+CLEAN_LOCAL_TARGETS += clean-man
+clean-man:
+	rm -rf doc/output/man
+
+endif ENABLE_DOC
