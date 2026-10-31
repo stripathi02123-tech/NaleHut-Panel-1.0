@@ -1,0 +1,56 @@
+#!/bin/sh
+
+set -eu
+ROOT_DIR=$(realpath -m "$0"/../..)
+cd "$ROOT_DIR"
+
+message() { printf "  %-8s %s\n" "$1" "$2" >&2; }
+
+# Set the version number from the state at the time the build was requested
+VERSION="$(git describe --tags --long --dirty=.dirty | sed 's/-\([0-9]*\)-g/.dev\1+g/')"
+
+while [ $# != 0 ] ; do
+    case "$1" in
+        *=*)
+            break;;
+        *)
+            echo "usage: $0 [MAKE_VAR=VALUE...]" >&2
+            exit 1
+    esac
+    shift
+done
+
+# NB: only the filename of the tarball should be written to stdout.
+# Everything else should go to stderr.
+
+# autogen, if not already done
+if [ ! configure -nt configure.ac ]; then
+    message AUTOGEN 'configure, Makefile.in'
+    # Unfortunately there's no better way to silence this
+    NOCONFIGURE=1 ./autogen.sh >/dev/null 2>&1
+fi
+
+# If we have a configured tree, use it to build the tarball.  Otherwise, create
+# a temporary directory and configure it with a minimal config to build the
+# tarball.
+if [ -f Makefile ]; then
+    :
+else
+    builddir='tmp/build-dist'
+    rm -rf "${builddir}"
+    mkdir -p "${builddir}"
+    cd "${builddir}"
+    message CONFIG "${builddir}/Makefile"
+    ../../configure \
+        CPPFLAGS=-I../../tools/mock-build-env \
+        PKG_CONFIG_PATH=../../tools/mock-build-env \
+        --enable-prefix-only \
+        > /dev/null
+fi
+
+# Do the actual build; dist creates both the main and node runtime tarballs
+make -s -j"$(nproc)" XZ_OPT='-0' VERSION="${VERSION}" "$@" dist >&2
+
+# Output tarball paths to stdout (only)
+realpath "cockpit-${VERSION}.tar.xz"
+realpath "cockpit-node-${VERSION}.tar.xz"

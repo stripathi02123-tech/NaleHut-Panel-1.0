@@ -1,0 +1,114 @@
+# Maintainer: Massimiliano Torromeo <massimiliano.torromeo@gmail.com>
+# Contributor: Iwan Timmer <irtimmer@gmail.com>
+# Contributor: Mark Constable <markc@renta.net>
+# Contributor: Anatol Pomozov <anatol.pomozov@gmail.com>
+
+pkgbase=cockpit
+pkgname=(cockpit cockpit-packagekit cockpit-storaged)
+pkgver=0
+pkgrel=1
+pkgdesc='A systemd web based user interface for Linux servers'
+arch=('x86_64')
+url='https://cockpit-project.org/'
+license=(LGPL)
+makedepends=(krb5 json-glib glib-networking glib2-devel
+             git intltool gtk-doc gobject-introspection networkmanager npm
+             asciidoctor python-build python-installer python-wheel)
+source=("cockpit-${pkgver}.tar.xz"
+        "cockpit.pam")
+sha256sums=('SKIP'
+            '079bb6751214e642673f9e1212df2a17fed1a3cc6cfdd6375af2b68ed6ddd340')
+
+prepare() {
+  cd cockpit-$pkgver
+  # TODO: disable buggy package-lock check
+  sed -r '/^cmd_make_package_lock_json\b/ a exit 0' -i tools/node-modules
+}
+
+build() {
+  cd cockpit-$pkgver
+  ./configure \
+    --prefix=/usr \
+    --sbindir=/usr/bin \
+    --libexecdir=/usr/lib/$pkgname/ \
+    --sysconfdir=/etc \
+    --localstatedir=/var \
+    --disable-dependency-tracking \
+    --disable-silent-rules \
+    --with-admin-group=wheel \
+  make all
+}
+
+package_cockpit() {
+  depends=(krb5 json-glib python)
+  provides=(cockpit-pcp)
+  replaces=(cockpit-pcp)
+  backup=('etc/pam.d/cockpit' 'etc/cockpit/disallowed-users')
+  optdepends=("pcp: reading performance metrics"
+              "cockpit-storaged: manage storage"
+              "cockpit-packagekit: manage packaged"
+              "cockpit-podman: user interface for managing podman containers"
+              "cockpit-machines: user interface for managing virtual machines"
+              "polkit: elevate privileges"
+              "sudo: elevate privileges"
+              "networkmanager: manage network connections"
+              "sssd: authentication"
+              "sscg: generate self-signed certificate")
+
+  cd cockpit-$pkgver
+  make DESTDIR="$pkgdir" install
+  rm -rf "$pkgdir"/usr/{src,lib/firewalld}
+  install -Dm644 "$srcdir"/cockpit.pam "$pkgdir"/etc/pam.d/cockpit
+
+  # remove unused plugins
+  rm -rf "$pkgdir"/usr/share/cockpit/{selinux,playground,sosreport} \
+         "$pkgdir"/usr/share/metainfo/org.cockpit_project.cockpit_{selinux,sosreport}.metainfo.xml
+
+  # remove plugins packaged separately
+  rm -rf "$pkgdir"/usr/share/cockpit/{apps,packagekit,pcp,storaged} \
+         "$pkgdir"/usr/share/metainfo/org.cockpit_project.cockpit_storaged.metainfo.xml \
+         "$pkgdir"/usr/lib/cockpit/cockpit-pcp \
+         "$pkgdir"/var/lib/pcp
+
+  # Arch lacks the necessary kdump packages and grub infra
+  rm -rf "$pkgdir"/usr/share/cockpit/kdump \
+         "$pkgdir"/usr/share/metainfo/org.cockpit_project.cockpit_kdump.metainfo.xml
+
+  # Disallow root login by default
+  printf "# List of users which are not allowed to login to Cockpit\nroot\n" > "$pkgdir"/etc/cockpit/disallowed-users
+  chmod 644 "$pkgdir"/etc/cockpit/disallowed-users
+}
+
+_do_package_component() {
+  _component="${1:-${pkgname#cockpit-}}"
+
+  cd "$srcdir"/cockpit-$pkgver
+  make DESTDIR="$pkgdir"/tmp install
+
+  cd "$pkgdir"/tmp
+  bsdtar -cf - usr/share/cockpit/$_component \
+    | bsdtar -xf - -C "$pkgdir"
+
+  metainfo="usr/share/metainfo/org.cockpit_project.cockpit_${_component}.metainfo.xml"
+
+  [ -f "$metainfo" ] && \
+    install -Dm644 "$metainfo" "$pkgdir/$metainfo"
+
+  rm -rf "$pkgdir"/tmp
+}
+
+package_cockpit-storaged() {
+  pkgdesc='Cockpit user interface for storage, using udisks'
+  depends=(cockpit udisks2 dbus-python)
+  optdepends=(
+    "clevis: manage disk encryption"
+  )
+  _do_package_component
+}
+
+package_cockpit-packagekit() {
+  pkgdesc='Cockpit user interface for packages'
+  depends=(cockpit polkit packagekit python)
+  _do_package_component
+  _do_package_component apps
+}

@@ -1,0 +1,40 @@
+#!/bin/sh
+set -e
+
+#DEBHELPER#
+
+# remove dpkg-statoverride on upgrade
+if [ "$1" = "configure" ] && dpkg-statoverride --list /usr/lib/cockpit/cockpit-session >/dev/null; then
+    dpkg-statoverride --remove /usr/lib/cockpit/cockpit-session
+    chmod 755 /usr/lib/cockpit/cockpit-session
+    chgrp root /usr/lib/cockpit/cockpit-session
+fi
+
+# restart cockpit.service on package upgrades, if it's already running
+if [ -d /run/systemd/system ] && [ -n "$2" ]; then
+    deb-systemd-invoke try-restart cockpit.service >/dev/null || true
+fi
+
+# update AppArmor profile
+if [ "$1" = "configure" ] && [ -e /etc/apparmor.d/cockpit-desktop ] && aa-enabled --quiet 2>/dev/null; then
+    apparmor_parser -r -T -W /etc/apparmor.d/cockpit-desktop || true
+fi
+
+# set up dynamic motd/issue symlinks on first-time install or upgrades from < 244 (which moved them out of the .deb)
+if [ "$1" = "configure" ] && dpkg --compare-versions "$2" lt 244; then
+    mkdir -p /etc/motd.d /etc/issue.d
+    ln -s ../../run/cockpit/issue /etc/motd.d/cockpit
+    ln -s ../../run/cockpit/issue /etc/issue.d/cockpit.issue
+    printf "# List of users which are not allowed to login to Cockpit\nroot\n" > /etc/cockpit/disallowed-users
+    chmod 644 /etc/cockpit/disallowed-users
+fi
+
+# adjust motd/issue links to the changed target if they still exist
+if [ "$1" = "configure" ] && dpkg --compare-versions "$2" lt-nl 331; then
+    if [ "$(readlink /etc/motd.d/cockpit 2>/dev/null)" = "../../run/cockpit/motd" ]; then
+        ln -sfn ../../run/cockpit/issue /etc/motd.d/cockpit
+    fi
+    if [ "$(readlink /etc/issue.d/cockpit.issue 2>/dev/null)" = "../../run/cockpit/motd" ]; then
+        ln -sfn ../../run/cockpit/issue /etc/issue.d/cockpit.issue
+    fi
+fi

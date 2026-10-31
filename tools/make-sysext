@@ -1,0 +1,83 @@
+#!/bin/sh
+#
+# Copyright (C) 2024 Red Hat, Inc.
+# SPDX-License-Identifier: LGPL-2.1-or-later
+
+
+# Build and install tree as systemd-sysext.
+# See ../HACKING.MD section "Working on your local machine: systemd-sysext"
+
+set -eu
+
+SYSEXT_NAME="cockpit-git"
+SYSEXT_DIR="/run/extensions/$SYSEXT_NAME"
+
+build() {
+    rm -rf tmp/sysext
+    if [ ! -e Makefile ]; then
+        ./autogen.sh --prefix=/usr --sysconfdir=/etc --localstatedir=/var --enable-debug --disable-dependency-tracking
+    fi
+    make install DESTDIR=tmp/sysext
+    install -D -m 644 $PAMFILE tmp/sysext/usr/lib/pam.d/cockpit
+    install -d tmp/sysext/usr/lib/extension-release.d
+    printf "ID=$ID\nVERSION_ID=$VERSION_ID\n" > tmp/sysext/usr/lib/extension-release.d/"extension-release.$SYSEXT_NAME"
+}
+
+stop() {
+    if systemctl is-active --quiet cockpit.socket; then
+        systemctl stop cockpit.socket
+    fi
+    if systemctl is-enabled --quiet cockpit.socket; then
+        systemctl disable cockpit.socket
+    fi
+    if [ -d $SYSEXT_DIR ]; then
+        rm -rf "$SYSEXT_DIR"
+    fi
+    if systemd-sysext --no-legend status | grep -qw "$SYSEXT_NAME"; then
+        systemd-sysext refresh
+    fi
+}
+
+if [ "${1:-}" = root-stop ]; then
+    stop
+    exit 0
+fi
+
+if [ "${1:-}" = install ]; then
+    stop
+    mkdir -p "$(dirname $SYSEXT_DIR)"
+    cp -r tmp/sysext "$SYSEXT_DIR"
+    systemd-sysext refresh
+
+    echo
+    systemd-sysext status --no-pager
+
+    systemctl start cockpit.socket
+    exit 0
+fi
+
+. /etc/os-release
+
+case "$ID" in
+    # rolling release, no $VERSION_ID
+    arch) PAMFILE=tools/arch/cockpit.pam; VERSION_ID=latest ;;
+    fedora|centos|rhel|bazzite) PAMFILE=tools/cockpit.pam ;;
+    debian|ubuntu) PAMFILE=tools/cockpit.debian.pam ;;
+    *) echo "Unsupported distribution: $ID"; exit 1 ;;
+esac
+
+# build mode
+
+# call ourselves in install mode
+if [ "${1:-}" = "stop" ]; then
+    arg="root-stop"
+else
+    build
+    arg="install"
+fi
+
+if systemd-detect-virt --quiet --container; then
+    flatpak-spawn --host run0 "$0" "$arg"
+else
+    run0 "$0" "$arg"
+fi

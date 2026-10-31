@@ -1,0 +1,102 @@
+#!/usr/bin/make -f
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+DEB_HOST_MULTIARCH ?= $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
+
+# we need an apparmor profile for >= 4.0; this does not yet exist in Ubuntu 22.04
+PRE4AA = $(filter $(shell . /etc/os-release; echo $${VERSION_ID:-unstable}),22.04)
+
+# Ubuntu 22.04 LTS's node.js version 12 is too old to understand our source.
+# Also, esbuild/nodejs are not available on all Debian architectures.
+# Keep the pre-built dist/ for Ubuntu 22.04 and when nodejs is not available.
+KEEP_DIST = $(filter $(shell . /etc/os-release; echo $${VERSION_ID:-unstable}),22.04)
+ifeq ($(KEEP_DIST),)
+    ifeq ($(shell command -v nodejs 2>/dev/null),)
+        KEEP_DIST = no-nodejs
+    endif
+endif
+
+# keep the host switcher on in currently supported stable releases
+STABLE = $(filter $(shell . /etc/os-release; echo $${VERSION_CODENAME}),bookworm jammy noble)
+ifneq ($(STABLE),)
+    CONFIG_OPTIONS := $(CONFIG_OPTIONS) --enable-multihost
+endif
+
+# riscv is an emulated architecture for now, and too slow to run expensive unit tests
+# hppa's threading is absurdly slow (#981127)
+SLOW_ARCHES = $(filter $(shell dpkg-architecture -qDEB_BUILD_ARCH),riscv64 hppa)
+ifneq ($(SLOW_ARCHES),)
+	export COCKPIT_SKIP_SLOW_TESTS=1
+endif
+
+export deb_systemdsystemunitdir = $(shell pkgconf --variable=systemdsystemunitdir systemd | sed s,^/,,)
+# pam.pc doesn't yet have a libdir on older releases
+export deb_pamlibdir = $(shell { pkgconf --variable=libdir pam || echo /lib/$(DEB_HOST_MULTIARCH); } | sed s,^/,,)
+
+%:
+	dh $@ --buildsystem=autoconf --with=python3
+
+override_dh_auto_configure:
+ifeq ($(KEEP_DIST),)
+	# upstream releases include a pre-built dist/, rebuild it
+	rm -fr dist/
+	# HACK: names for additional tarballs can't contain '_', so we name it just "orig-node"
+	ln -fs node node_modules
+endif
+	dh_auto_configure -- \
+		--with-pamdir=/$(deb_pamlibdir)/security \
+		--libexecdir=/usr/lib/cockpit $(CONFIG_OPTIONS)
+
+# HACK: Debian's pip breaks --prefix: https://bugs.debian.org/1035546 with
+# default install layout
+override_dh_auto_install:
+	DEB_PYTHON_INSTALL_LAYOUT=deb dh_auto_install
+
+# avoid trying to start cockpit-issue.service and cockpit-wsinstance-*.socket etc.
+override_dh_installsystemd:
+	dh_installsystemd -p cockpit-ws cockpit.socket
+
+override_dh_install:
+	# Debian/Ubuntu PAM config
+	mkdir -p debian/tmp/etc/pam.d
+	install -p -m 644 tools/cockpit.debian.pam debian/tmp/etc/pam.d/cockpit
+
+	# don't ship broken branding symlinks
+	for d in arch rhel fedora centos opensuse; do rm -r debian/tmp/usr/share/cockpit/branding/$$d; done
+	dpkg-vendor --derives-from ubuntu || rm -r debian/tmp/usr/share/cockpit/branding/ubuntu
+
+	# handled by package maintainer scripts
+	rm debian/tmp/etc/motd.d/cockpit debian/tmp/etc/issue.d/cockpit.issue
+
+	# already processed into debian/copyright
+	rm -r debian/tmp/usr/share/doc/cockpit/legal
+
+	# unpackaged modules
+	rm -r debian/tmp/usr/share/cockpit/kdump
+	rm debian/tmp/usr/share/metainfo/org.cockpit_project.cockpit_kdump.metainfo.xml
+	rm -r debian/tmp/usr/share/cockpit/selinux
+	rm debian/tmp/usr/share/metainfo/org.cockpit_project.cockpit_selinux.metainfo.xml
+
+	dh_install -Xusr/src/debug
+	# we don't need this, it contains full build paths and breaks reproducibility
+	rm -r debian/tmp/usr/lib/python*/*-packages/*.dist-info
+
+        # AppArmor profile
+ifeq ($(PRE4AA),)
+	mkdir -p debian/cockpit-ws/etc/apparmor.d/
+	install -p -m 644 tools/apparmor.d/cockpit-desktop debian/cockpit-ws/etc/apparmor.d/
+endif
+
+execute_after_dh_install-indep:
+	# avoid dh_missing failure
+	rm -r debian/tmp/usr/lib/python*
+
+	# run pytests *after* installation, so that we can make sure that we installed the right files
+ifeq (, $(findstring nocheck, $(DEB_BUILD_OPTIONS)))
+ifeq ($(shell . /etc/os-release; echo $${VERSION_ID:-unstable}),22.04)
+	NO_QUNIT=1 PYTHONPATH=$$(ls -d debian/cockpit-bridge/usr/lib/python3*/dist-packages) python3 -m pytest -vv -k 'not linter and not test_descriptions'
+else
+	NO_QUNIT=1 pytest -vv -k 'not linter and not test_descriptions' -opythonpath=$$(ls -d debian/cockpit-bridge/usr/lib/python3*/dist-packages)
+endif
+endif

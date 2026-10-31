@@ -1,0 +1,7 @@
+etc/cockpit/machines.d
+usr/bin/cockpit-bridge
+usr/lib/cockpit/cockpit-askpass
+usr/lib/python*
+usr/share/cockpit/base1/
+usr/share/man/man1/cockpit-bridge.1
+usr/share/polkit-1/actions/org.cockpit-project.cockpit-bridge.policy

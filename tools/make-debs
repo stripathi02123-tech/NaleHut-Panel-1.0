@@ -1,0 +1,66 @@
+#!/bin/bash
+#
+# Copyright (C) 2021 Red Hat, Inc.
+# SPDX-License-Identifier: LGPL-2.1-or-later
+
+
+set -euf
+
+mydir=$(dirname "$(realpath "$0")")
+
+usage()
+{
+	echo "usage: make-debs [--quick] [tarball]"
+}
+
+args=$(getopt -o "h,q" -l "help,quick" -- "$@")
+eval set -- "$args"
+while [ $# -gt 0 ]; do
+	case $1 in
+	-q|--quick)
+		export DEB_BUILD_OPTIONS=nocheck
+		;;
+	-h|--help)
+		usage
+		exit 0
+		;;
+	--)
+		shift
+		break
+		;;
+	esac
+	shift
+done
+
+if [ $# -gt 1 ]; then
+	usage
+	exit 2
+fi
+
+if [ -z "${1:-}" ]; then
+    # only use the main release tarball for now
+    source="$("$mydir/../tools/make-dist" | head -n1)"
+else
+    source="$(realpath "$1")"
+fi
+
+version=$(echo "$source" | sed -n 's|.*cockpit-\([^ /-]\+\)\.tar\..*|\1|p')
+if [ -z "$version" ]; then
+    echo "make-debs: couldn't parse version from tarball: $source"
+    exit 2
+fi
+
+builddir=tmp/builddeb
+rm -rf "$builddir"
+mkdir -p "$builddir"
+cd "$builddir"
+tar --strip-components=1 -xf "$source"
+cp -r tools/debian .
+# plug in our version
+sed -i "1 s/(0-/(${version}-/" debian/changelog
+dpkg-buildpackage -us -uc -b -j"$(nproc)"
+cd -
+
+find "$builddir"/.. -name '*.deb' -printf '%f\n' -exec mv {} . \;
+
+rm -r "$builddir"

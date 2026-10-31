@@ -1,0 +1,61 @@
+#!/bin/bash
+#
+# Copyright (C) 2015 Red Hat, Inc.
+# SPDX-License-Identifier: LGPL-2.1-or-later
+
+
+set -euf
+
+base=$(cd "$(dirname "$0")/../"; pwd -P)
+
+usage()
+{
+    echo "usage: make-rpms [--quick] [--verbose] [tarball]"
+}
+
+quiet="--quiet"
+check=""
+
+args=$(getopt -o "h,q,v" -l "help,quick,verbose" -- "$@")
+eval set -- "$args"
+while [ $# -gt 0 ]; do
+    case $1 in
+    -v|--verbose)
+        quiet=""
+        ;;
+    -q|--quick)
+        check="--nocheck"
+        ;;
+    -h|--help)
+        usage
+        exit 0
+        ;;
+    --)
+        shift
+        break
+        ;;
+    esac
+    shift
+done
+
+if [ $# -gt 1 ]; then
+    usage
+    exit 2
+fi
+
+if [ -z "${1-}" ]; then
+    # we specify the main tarball that contains the spec file;
+    # the others (-node) have to be next to it in the same directory
+    source="$("$base/tools/make-dist" | head -n1)"
+else
+    source="$1"
+fi
+
+tmpdir=$(mktemp -d "$PWD/rpm-build.XXXXXX")
+rpmbuild $check $quiet \
+    --define "_topdir $tmpdir" \
+    --define "_rpmdir $tmpdir/output" \
+    -tb "$source"
+
+find "$tmpdir/output" -name '*.rpm' -printf '%f\n' -exec mv {} . \;
+rm -r "$tmpdir"

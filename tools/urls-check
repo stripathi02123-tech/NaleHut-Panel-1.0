@@ -1,0 +1,141 @@
+#!/usr/bin/python3 -cimport os, sys; os.execv(os.path.dirname(sys.argv[1]) + "/../test/common/pywrap", sys.argv)
+
+#
+# Copyright (C) 2020 Red Hat, Inc.
+# SPDX-License-Identifier: LGPL-2.1-or-later
+
+
+import argparse
+import fnmatch
+import os
+import subprocess
+import sys
+import time
+import urllib
+from urllib.request import Request, urlopen
+
+from lib.github import GitHub
+
+BASE_DIR = os.path.realpath(f'{__file__}/../..')
+
+DAYS = 7
+TASK_NAME = "Validate all URLs"
+
+github = GitHub()
+
+USER_AGENT = "Mozilla/5.0 (X11; Fedora; Linux x86_64; rv:90.0) Gecko/20100101 Firefox/90.0"
+
+IGNORE = [
+    "https://www.gnome.org",  # keeps causing 403 from GitHub; DNS or user-agent ban?
+    "*example.com*",  # some tests use demo urls
+]
+
+KNOWN_REDIRECTS = [
+    # fnmatch-like
+    "https://access.redhat.com/security/updates/classification/#",
+    "https://firefox.com/",
+    "https://www.microsoft.com/",
+    "https://github.com/patternfly/*",
+    # SVG/XML processing in *.jsx
+    "http://www.w3.org/2000/svg",
+    "http://www.w3.org/XML/1998/namespace",
+]
+
+
+def main():
+    parser = argparse.ArgumentParser(description=TASK_NAME)
+    parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
+    parser.add_argument('-n', '--dry-run', action="store_true",
+                        help="Only show urls")
+    opts = parser.parse_args()
+
+    if opts.dry_run:
+        (success, err) = check_urls(opts.verbose)
+        print(err)
+        print(success)
+        sys.exit(1 if err else 0)
+
+    since = time.time() - (DAYS * 86400)
+
+    # When there is an open issue, don't do anything
+    issues = github.issues(state="open")
+    issues = [i for i in issues if i["title"] == TASK_NAME]
+    if issues:
+        return
+
+    issues = github.issues(state="closed", since=since)
+    issues = [i for i in issues if i["title"] == TASK_NAME]
+
+    # If related issue was not modified in last n-DAYS, then do your thing
+    if not issues:
+        (success, err) = check_urls(opts.verbose)
+        if err:
+            # Create a new issue
+            data = {
+                "title": TASK_NAME,
+                "body": err,
+                "labels": ["bot"]
+            }
+            github.post("issues", data)
+        else:
+            # Try to comment on the last issue (look in the last 4*DAYS)
+            # If there is not issue to be found, then just open a new one and close it
+            success = success or "Task hasn't produced any output"
+            since = time.time() - (DAYS * 4 * 86400)
+            issues = github.issues(state="closed", since=since)
+            issues = [i for i in issues if i["title"] == TASK_NAME]
+            if issues:
+                github.comment(issues[0]["number"], success)
+            else:
+                data = {
+                    "title": TASK_NAME,
+                    "body": success,
+                    "labels": ["bot"]
+                }
+                new_issue = github.post("issues", data)
+                github.patch(f"issues/{new_issue['number']}", {"state": "closed"})
+
+
+def check_urls(verbose):
+    command = r'git grep -IEho "(https?)://[-a-zA-Z0-9@:%_\+.~#?&=/]+" -- pkg ":!*.svg" | sort -u'
+    urls = subprocess.check_output(command, shell=True, universal_newlines=True, cwd=BASE_DIR).split("\n")
+    redirects = []
+    failed = []
+    for url in urls:
+        if not url:
+            continue
+
+        if any(fnmatch.fnmatch(url, pattern) for pattern in IGNORE):
+            if verbose:
+                print(f"Ignoring: {url}")
+            continue
+
+        if verbose:
+            print(f"Checking: {url}")
+
+        try:
+            # Specify agent as some websites otherwise block requests
+            req = Request(url=url, headers={"User-Agent": USER_AGENT})
+            resp = urlopen(req)
+            if resp.geturl() != url and not any(fnmatch.fnmatch(url, pattern) for pattern in KNOWN_REDIRECTS):
+                redirects.append(url)
+            if resp.getcode() >= 400:
+                failed.append(f"{url} : {resp.getcode()} {resp.reason}")
+        except urllib.error.URLError as e:
+            failed.append(f"{url} : {e.reason}")
+
+    err = ""
+    success = ""
+    if failed:
+        err = f"Checked {len(urls)} URLs out of which {len(failed)} is/are invalid:\n"
+        err += ''.join(f'    {url}\n' for url in failed)
+    else:
+        success = f"Checked {len(urls)} URLs and all are valid."
+    if redirects:
+        success += "\nFollowing URLs are redirected:\n"
+        success += ''.join(f'    {url}\n' for url in redirects)
+    return success, err
+
+
+if __name__ == '__main__':
+    sys.exit(main())
