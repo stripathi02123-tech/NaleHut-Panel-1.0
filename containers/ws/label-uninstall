@@ -1,0 +1,19 @@
+#!/bin/sh -eu
+
+# This is the uninstall script for Cockpit when run in a privileged container
+#
+# The host file system must be mounted at /host
+
+cd /
+PATH="/bin:/sbin"
+
+if [ ! -d /host/etc -o ! -d /host/proc -o ! -d /host/run ]; then
+    echo "host file system is not mounted at /host" >&2
+    exit 1
+fi
+
+set -x
+
+# Everything else is settings and should remain
+rm -f /host/etc/pam.d/cockpit
+rm -f /host/etc/systemd/system/cockpit.service

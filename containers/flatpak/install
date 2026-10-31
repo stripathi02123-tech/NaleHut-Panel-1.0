@@ -1,0 +1,33 @@
+#!/bin/sh
+
+# Usage:
+#    containers/flatpak/install [extra opts...]
+#
+# If [extra opts...] are specified, they are passed directly to
+# flatpak-builder, eg: --user.
+#
+# If the TARBALL environment variable is set, the named tarball will be used
+# instead of running `make dist`.  URLBASE can also be set.  See the comment in
+# containers/flatpak/prepare for more information about those.
+
+set -eu
+cd "${0%/*}/../.."
+
+mkdir -p tmp
+cd tmp
+
+MANIFEST="$(../containers/flatpak/prepare)"
+
+flatpak run \
+    org.flatpak.Builder \
+        "$@" \
+        --force-clean \
+        --mirror-screenshots-url=https://dl.flathub.org/media \
+        --compose-url-policy=full \
+        --install flatpak-build-dir "${MANIFEST}"
+
+flatpak run \
+    --command=flatpak-builder-lint \
+    org.flatpak.Builder \
+        --exceptions \
+        builddir flatpak-build-dir
