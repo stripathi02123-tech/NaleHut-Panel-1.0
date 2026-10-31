@@ -1,0 +1,15 @@
+{
+    "conditions": [
+        {"path-exists": "/sys/fs/selinux"}
+    ],
+    "tools": {
+        "index": {
+            "label": "SELinux",
+            "keywords": [
+                {
+                    "matches": ["setroubleshoot", "semanage", "avc"]
+                }
+            ]
+        }
+    }
+}

@@ -1,0 +1,15 @@
+{
+    "conditions": [
+	{"any": [{"path-exists": "/usr/bin/sos"}, {"path-exists": "/usr/sbin/sos"}]}
+    ],
+    "tools": {
+        "index": {
+            "label": "Diagnostic reports",
+            "keywords": [
+                {
+                    "matches": ["sos"]
+                }
+            ]
+        }
+    }
+}

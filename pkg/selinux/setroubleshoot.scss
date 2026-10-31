@@ -1,0 +1,48 @@
+/*
+ * Copyright (C) 2016 Red Hat, Inc.
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ */
+
+@use "ct-card";
+@use "page";
+
+#app .pf-v6-c-card {
+  @extend .ct-card;
+}
+
+.setroubleshoot-log {
+  font-family: monospace;
+}
+
+.setroubleshoot-progress-spinner {
+  display: inline-block;
+}
+
+.setroubleshoot-progress-message {
+  vertical-align: top;
+}
+
+.selinux-details {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--pf-t--global--spacer--sm) var(--pf-t--global--spacer--md);
+
+  > div:first-child {
+    inline-size: 70%;
+    flex: auto;
+  }
+
+  + hr {
+    margin-block-start: var(--pf-t--global--spacer--sm);
+  }
+
+  .pf-v6-c-expandable-section__content {
+    margin-block-start: unset;
+  }
+}
+
+.selinux-details textarea {
+  margin-block-start: var(--pf-t--global--spacer--xs);
+  resize: none;
+}
