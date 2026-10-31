@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+import fs from 'node:fs';
+import path from 'node:path';
+
+// always start with a fresh dist/ directory, to change between development and production, or clean up gzipped files
+export const cleanPlugin = ({ outdir = './dist', subdir = '' } = {}) => ({
+    name: 'clean-dist',
+    setup(build) {
+        build.onStart(() => {
+            try {
+                fs.rmSync(path.resolve(outdir, subdir), { recursive: true });
+            } catch (e) {
+                if (e.code !== 'ENOENT')
+                    throw e;
+            }
+        });
+    }
+});

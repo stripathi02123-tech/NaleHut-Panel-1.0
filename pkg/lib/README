@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Cockpit shared components
+
+This directory contains React components, JavaScript modules, esbuild
+plugins, and build tools which are shared between all Cockpit projects.
+External projects usually clone this directory into their own source tree.

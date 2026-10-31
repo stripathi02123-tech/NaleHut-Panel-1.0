@@ -1,0 +1,8 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
+.ct-serverTime-time-picker {
+  max-inline-size: 7rem;
+}
+
+.ntp-server-input-group:not(:last-child) {
+  margin-block-end: var(--pf-t--global--spacer--sm);
+}
