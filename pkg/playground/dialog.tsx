@@ -1,0 +1,851 @@
+/*
+ * Copyright (C) 2025 Red Hat, Inc.
+ *
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ */
+
+import React, { useState, useReducer, useId } from "react";
+import { createRoot } from 'react-dom/client';
+import cockpit from 'cockpit';
+
+import '../lib/patternfly/patternfly-6-cockpit.scss';
+
+import { Page, PageSection } from "@patternfly/react-core/dist/esm/components/Page/index.js";
+import { Bullseye } from "@patternfly/react-core/dist/esm/layouts/Bullseye";
+import { Button } from "@patternfly/react-core/dist/esm/components/Button/index.js";
+import { Checkbox } from "@patternfly/react-core/dist/esm/components/Checkbox";
+import { Split, SplitItem } from "@patternfly/react-core/dist/esm/layouts/Split/index.js";
+import { Modal, ModalBody, ModalHeader, ModalFooter } from '@patternfly/react-core/dist/esm/components/Modal';
+import { Form, FormGroup } from "@patternfly/react-core/dist/esm/components/Form";
+import { DescriptionList, DescriptionListDescription, DescriptionListGroup, DescriptionListTerm } from "@patternfly/react-core/dist/esm/components/DescriptionList/index.js";
+import { Spinner } from "@patternfly/react-core/dist/esm/components/Spinner";
+
+import { WithDialogs, useDialogs } from 'dialogs';
+
+import {
+    useDialogState, DialogState,
+    useDialogState_async,
+    DialogError,
+    DialogErrorMessage,
+    DialogField,
+    DialogCheckbox,
+    DialogTextInput,
+    DialogRadioSelect,
+    DialogDropdownSelect, DialogDropdownSelectObject,
+    DialogHelperText,
+    DialogActionButton, DialogCancelButton,
+} from 'cockpit/dialog';
+
+import { FileChooser, DialogFileChooserInput } from "cockpit/react/FileChooser";
+
+import 'cockpit-dark-theme'; // once per page
+import 'page.scss';
+
+function List<T>({
+    label,
+    field,
+    Component,
+    init,
+} : {
+    label: string
+    field: DialogField<T[]>,
+    Component: ({ field } : { field: DialogField<T> }) => React.ReactNode,
+    init: T,
+}) {
+    return (
+        <FormGroup label={label} ouiaId={field.ouia_id()}>
+            { field.map((f, i) => (
+                <Split key={i}>
+                    <SplitItem isFilled>
+                        <Component field={f} />
+                    </SplitItem>
+                    <SplitItem>
+                        <Button
+                            ouiaId={f.ouia_id("remove")}
+                            variant="link"
+                            onClick={() => field.remove(i)}
+                        >
+                            Remove
+                        </Button>
+                    </SplitItem>
+                </Split>
+            ))}
+            <DialogHelperText field={field} />
+            <Button
+                ouiaId={field.ouia_id("add")}
+                variant="link"
+                onClick={() => field.add(init)}
+            >
+                Add
+            </Button>
+        </FormGroup>
+    );
+}
+
+const StringList = ({
+    field,
+    label,
+} : {
+    field: DialogField<string[]>,
+    label: string
+}) => {
+    return (
+        <List
+            label={label}
+            field={field}
+            Component={DialogTextInput}
+            init=""
+        />
+    );
+};
+
+interface Name {
+    name: string;
+    _length: number;
+}
+
+const NameInput = ({
+    field,
+} : {
+    field: DialogField<Name>,
+}) => {
+    return <DialogTextInput field={field.sub("name")} debounce={1000} />;
+};
+
+function validate_Name(field: DialogField<Name>, countAsyncValidation: () => void) {
+    field.sub("name").validate_async(async (n, signal) => {
+        await async_sleep(2000);
+        countAsyncValidation();
+        if (!signal.aborted)
+            field.sub("_length").set(n.length);
+        if (n.length % 2)
+            return "Must have even number of characters";
+    });
+}
+
+const NameList = ({
+    field,
+    label,
+} : {
+    field: DialogField<Name[]>,
+    label: string
+}) => {
+    return (
+        <List
+            label={label}
+            field={field}
+            Component={NameInput}
+            init={{ name: "", _length: 0 }}
+        />
+    );
+};
+
+const OptionalTextInput = ({
+    field_label,
+    checkbox_label,
+    field,
+} : {
+    field_label: string,
+    checkbox_label: string;
+    field: DialogField<false | string>,
+}) => {
+    const id = useId();
+    const val = field.get();
+    let body;
+
+    if (val === false) {
+        body = (
+            <Checkbox
+                id={id}
+                ouiaId={field.ouia_id("checkbox")}
+                isChecked={false}
+                label={checkbox_label}
+                onChange={() => field.set("")}
+            />
+        );
+    } else {
+        body = (
+            <>
+                <Checkbox
+                    id={id}
+                    ouiaId={field.ouia_id("checkbox")}
+                    isChecked
+                    label={checkbox_label}
+                    onChange={() => field.set(false)}
+                />
+                <DialogTextInput field={field.at(val)} />
+            </>
+        );
+    }
+
+    return (
+        <FormGroup
+            label={field_label}
+        >
+            {body}
+            <DialogHelperText field={field} />
+        </FormGroup>
+    );
+};
+
+function async_sleep(n: number) {
+    return new Promise(resolve => {
+        window.setTimeout(resolve, n);
+    });
+}
+
+interface Color {
+    name: string,
+    red: number,
+    green: number,
+    blue: number,
+}
+
+const colors: Color[] = [
+    { name: "red", red: 1, green: 0, blue: 0 },
+    { name: "green", red: 0, green: 1, blue: 0 },
+    { name: "blue", red: 0, green: 0, blue: 1 },
+];
+
+interface ExampleValues {
+    flag: boolean;
+    text: string;
+    text2: string;
+    radio: string;
+    dropdown: string;
+    text3: string;
+    color: Color,
+    list: string[];
+    async: Name[];
+    alternative: false | string;
+    error: string;
+    allow_force: boolean;
+    file: string;
+    file_explanation: string;
+    dir: string;
+    path: string;
+}
+
+const ExampleDialog = ({
+    setResult,
+    countAsyncValidation,
+    countAsyncUpdate,
+    countAsyncCancel,
+} : {
+    setResult: (values: ExampleValues) => void,
+    countAsyncValidation: () => void,
+    countAsyncUpdate: () => void,
+    countAsyncCancel: () => void,
+}) => {
+    const Dialogs = useDialogs();
+
+    const init: ExampleValues = {
+        flag: false,
+        text: "",
+        text2: "",
+        radio: "one",
+        dropdown: "one",
+        text3: "",
+        color: colors[0],
+        list: [],
+        async: [],
+        alternative: false,
+        error: "none",
+        allow_force: false,
+        file: "",
+        file_explanation: "",
+        dir: "",
+        path: "",
+    };
+
+    function validate(dlg: DialogState<ExampleValues>) {
+        if (dlg.values.flag) {
+            dlg.field("text").validate(v => {
+                if (!v)
+                    return "Text can not be empty";
+            });
+        }
+        if (dlg.values.dropdown === "three") {
+            dlg.field("text3").validate(v => {
+                if (!v)
+                    return "Can't be empty";
+            });
+        }
+        dlg.field("list").forEach(v => {
+            v.validate(vv => {
+                if (vv === "magic")
+                    dlg.field("text").set("magic");
+                if (vv === ".")
+                    return "No dots";
+            });
+        });
+        dlg.field("async").forEach(v => validate_Name(v, countAsyncValidation));
+        dlg.field("file").validate(v => {
+            if (v && v[0] !== "/")
+                return "Must be absolute";
+        });
+    }
+
+    const dlg = useDialogState(init, validate);
+
+    async function apply(values: ExampleValues, variant: string) {
+        setResult(values);
+
+        if (variant === "force")
+            return;
+
+        if (values.error === "custom") {
+            throw new DialogError("This is a failure", <code>1234-567-98A</code>);
+        } else if (values.error === "from") {
+            const err = new Error("no such file or scraper");
+            throw DialogError.fromError("Tool not found", err);
+        } else if (values.error === "from-random") {
+            const err = [1, 2, 3, 4];
+            throw DialogError.fromError("Too random", err);
+        } else if (values.error === "message") {
+            // eslint-disable-next-line no-throw-literal
+            throw { message: "segmentation fault" };
+        } else if (values.error === "spawn") {
+            await cockpit.spawn(["ls", "--no-such-option"], { err: "message" });
+        } else if (values.error === "random") {
+            // eslint-disable-next-line no-throw-literal
+            throw [1, 2, 3, 4];
+        }
+    }
+
+    function color_changed() {
+        dlg.field("color").get_async(async (val, signal) => {
+            signal.onabort = countAsyncCancel;
+            await async_sleep(2000);
+            if (!signal.aborted) {
+                countAsyncUpdate();
+                dlg.field("text").set(val.name);
+            }
+        });
+    }
+
+    function dropdown_changed(val: string) {
+        dlg.field("text2").set_async(async () => {
+            await async_sleep(2000);
+            return val;
+        });
+    }
+
+    function file_changed(val: string) {
+        dlg.field("file_explanation").set_async(async () => {
+            if (val[0] === "/")
+                return cockpit.spawn(["file", "-b", val], { superuser: "try" });
+            else
+                return "--";
+        });
+    }
+
+    return (
+        <Modal
+            id="dialog"
+            position="top"
+            variant="medium"
+            isOpen
+            onClose={Dialogs.close}
+        >
+            <ModalHeader title="Demo" />
+            <ModalBody>
+                <DialogErrorMessage dialog={dlg} />
+                <Form isHorizontal>
+                    <DialogCheckbox
+                        field_label="Checkbox"
+                        checkbox_label="Enable text"
+                        field={dlg.field("flag")}
+                    />
+                    <DialogTextInput
+                        label="Text"
+                        field={dlg.field("text")}
+                        debounce={0}
+                        excuse={!dlg.values.flag && "Disabled"}
+                        explanation="Explanation"
+                        warning={dlg.values.text === "warn" ? "Warning" : null}
+                    />
+                    <DialogTextInput
+                        label="Text2"
+                        field={dlg.field("text2")}
+                    />
+                    {
+                        // Calling "map" on a non-array should just do nothing.
+                        dlg.field("text").map((v, i) => <span key={i}>{v.get()}</span>)
+                    }
+                    <DialogRadioSelect
+                        label="Radio"
+                        field={dlg.field("radio")}
+                        options={
+                            [
+                                {
+                                    value: "one",
+                                    label: "Eins",
+                                    explanation: "One explanation"
+                                },
+                                {
+                                    value: "two",
+                                    label: "Zwei",
+                                    explanation: "Two explanation",
+                                    excuse: "disabled",
+                                },
+                                {
+                                    value: "three",
+                                    label: "Drei",
+                                },
+                            ]
+                        }
+                    />
+                    <DialogDropdownSelect
+                        label="Dropdown"
+                        field={dlg.field("dropdown", dropdown_changed)}
+                        options={
+                            [
+                                { value: "one", label: "Eins" },
+                                { value: "two", label: "Zwei" },
+                                { value: "three", label: "Drei" },
+                            ]
+                        }
+                        warning={dlg.field("dropdown").get() === "two" ? "There is a discount if you buy three." : null}
+                    />
+                    {
+                        dlg.values.dropdown === "three" &&
+                            <DialogTextInput label="Text3" field={dlg.field("text3")} debounce={1000} />
+                    }
+                    <DialogDropdownSelectObject
+                        label="DropdownObject"
+                        field={dlg.field("color").notify(color_changed)}
+                        options={colors}
+                        option_label={c => c.name}
+                    />
+                    <StringList label="List" field={dlg.field("list")} />
+                    <NameList label="Async" field={dlg.field("async")} />
+                    <OptionalTextInput
+                        field_label="Alternative"
+                        checkbox_label="Custom value"
+                        field={dlg.field("alternative")}
+                    />
+                    <DialogDropdownSelectObject
+                        label="Error"
+                        field={dlg.field("error")}
+                        options={["none", "custom", "from", "from-random", "message", "spawn", "random"]}
+                        warning={dlg.field("error").get() !== "none" ? "There will be an error unless you apply with force" : null}
+                    />
+                    <DialogCheckbox
+                        field_label="Action options"
+                        checkbox_label="Allow force"
+                        field={dlg.field("allow_force")}
+                    />
+                    <DialogFileChooserInput
+                        label="File"
+                        field={dlg.field("file", file_changed)}
+                        explanation={dlg.values.file_explanation}
+                        fileChooserProps={
+                            {
+                                title: "Select a file",
+                                superuser: "try",
+                                filters: [
+                                    { label: "No dots", filter: n => !n.includes(".") },
+                                ],
+                                shortcuts: [
+                                    { label: "Test files", path: "/var/lib/cockpittest" }
+                                ],
+                                collections: [
+                                    {
+                                        label: "Some files",
+                                        emptyLabel: "Nothing there",
+                                        list: async () => {
+                                            return [
+                                                "/var/lib/cockpittest/file-chooser-test/dots.txt",
+                                                "/var/lib/cockpittest/file-chooser-test/foo",
+                                            ];
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    />
+                    <DialogFileChooserInput
+                        label="Directory"
+                        field={dlg.field("dir")}
+                        fileChooserProps={
+                            {
+                                title: "Select a directory",
+                                onlyDirectories: true,
+                                superuser: "try",
+                                shortcuts: [
+                                    { label: "Test files", path: "/var/lib/cockpittest" }
+                                ],
+                            }
+                        }
+                    />
+                    <DialogFileChooserInput
+                        label="File or directory"
+                        field={dlg.field("path")}
+                        fileChooserProps={
+                            {
+                                title: "Select a path",
+                                allowDirectories: true,
+                                superuser: "try",
+                            }
+                        }
+                    />
+                </Form>
+            </ModalBody>
+            <ModalFooter>
+                <DialogActionButton
+                    dialog={dlg}
+                    action={values => apply(values, "main")}
+                    onClose={Dialogs.close}
+                >
+                    Apply
+                </DialogActionButton>
+                <DialogActionButton
+                    dialog={dlg}
+                    action={values => apply(values, "force")}
+                    ouiaId="apply-force"
+                    variant="danger"
+                    onClose={Dialogs.close}
+                    excuse={dlg.values.allow_force ? undefined : "Force not allowed"}
+                >
+                    Apply with force
+                </DialogActionButton>
+                <DialogCancelButton dialog={dlg} onClose={Dialogs.close}>
+                    CANCEL!
+                </DialogCancelButton>
+            </ModalFooter>
+        </Modal>
+    );
+};
+
+const ExampleButton = () => {
+    const Dialogs = useDialogs();
+    const [values, setValues] = useState<ExampleValues | null>(null);
+    const [asyncValidationsBase, setAsyncValidationsBase] = useState<number>(0);
+    const [asyncValidations, countAsyncValidation] = useReducer(x => x + 1, 0);
+    const [asyncUpdatesBase, setAsyncUpdatesBase] = useState<number>(0);
+    const [asyncUpdates, countAsyncUpdate] = useReducer(x => x + 1, 0);
+    const [asyncCancelsBase, setAsyncCancelsBase] = useState<number>(0);
+    const [asyncCancels, countAsyncCancel] = useReducer(x => x + 1, 0);
+
+    function entry(id: string, val: string) {
+        return (
+            <DescriptionListGroup>
+                <DescriptionListTerm>{id}</DescriptionListTerm>
+                <DescriptionListDescription id={id}>{val}</DescriptionListDescription>
+            </DescriptionListGroup>
+        );
+    }
+
+    return (
+        <>
+            <Button
+                id="open"
+                onClick={
+                    () => {
+                        setAsyncValidationsBase(asyncValidations);
+                        setAsyncUpdatesBase(asyncUpdates);
+                        setAsyncCancelsBase(asyncCancels);
+                        Dialogs.show(
+                            <ExampleDialog
+                                setResult={setValues}
+                                countAsyncValidation={countAsyncValidation}
+                                countAsyncUpdate={countAsyncUpdate}
+                                countAsyncCancel={countAsyncCancel}
+                            />
+                        );
+                    }
+                }
+            >
+                Open dialog
+            </Button>
+            { values &&
+                <DescriptionList isHorizontal>
+                    { entry("flag", String(values.flag)) }
+                    { values.flag && entry("text", values.text) }
+                    { entry("text2", values.text2) }
+                    { entry("radio", values.radio) }
+                    { entry("dropdown", values.dropdown) }
+                    { entry("color", values.color.red + "/" + values.color.green + "/" + values.color.blue) }
+                    { entry("list", values.list.join("/")) }
+                    { entry("async", values.async.map(n => n.name + ":" + String(n._length)).join("/")) }
+                    { entry("asyncVals", String(asyncValidations - asyncValidationsBase)) }
+                    { entry("asyncUps", String(asyncUpdates - asyncUpdatesBase)) }
+                    { entry("asyncCancels", String(asyncCancels - asyncCancelsBase)) }
+                    { entry("alternative", JSON.stringify(values.alternative)) }
+                </DescriptionList>
+            }
+        </>
+    );
+};
+
+interface ExampleWithInitFuncValues {
+    text: string;
+    text2: string;
+}
+
+const ExampleDialogWithInitFunc = () => {
+    const Dialogs = useDialogs();
+
+    function init(): ExampleWithInitFuncValues {
+        return {
+            text: "foo",
+            text2: "bar",
+        };
+    }
+
+    function validate(dlg: DialogState<ExampleWithInitFuncValues>) {
+        dlg.top().validate(v => {
+            if (v.text === "foo" && v.text2 !== "bar") {
+                return {
+                    text: "No foo without bar",
+                };
+            }
+            if (v.text2 === "bar" && v.text !== "foo") {
+                return {
+                    text2: { "": "No bar without foo" },
+                };
+            }
+        });
+    }
+
+    const dlg = useDialogState(init, validate);
+
+    return (
+        <Modal
+            id="dialog"
+            position="top"
+            variant="medium"
+            isOpen
+            onClose={Dialogs.close}
+        >
+            <ModalHeader title="Demo" />
+            <ModalBody>
+                <DialogErrorMessage dialog={dlg} />
+                <Form isHorizontal>
+                    <DialogTextInput
+                        label="Text"
+                        field={dlg.field("text")}
+                    />
+                    <DialogTextInput
+                        label="Text 2"
+                        field={dlg.field("text2")}
+                    />
+                </Form>
+            </ModalBody>
+            <ModalFooter>
+                <DialogActionButton dialog={dlg} action={async () => {}} onClose={Dialogs.close}>
+                    Apply
+                </DialogActionButton>
+                <DialogCancelButton dialog={dlg} onClose={Dialogs.close} />
+            </ModalFooter>
+        </Modal>
+    );
+};
+
+interface AsyncExampleValues {
+    text: string;
+}
+
+const AsyncExampleDialog = ({
+    throwError = 0,
+    cancelCallback = null,
+} : {
+    throwError?: number,
+    cancelCallback?: null | (() => void),
+}) => {
+    const Dialogs = useDialogs();
+
+    async function init(): Promise<AsyncExampleValues> {
+        if (throwError === 1)
+            throw new Error("can't get the thing");
+        else if (throwError === 2)
+            throw new DialogError("Getting the thing failed", <i>can't get it</i>);
+
+        await async_sleep(500);
+        return {
+            text: "",
+        };
+    }
+
+    function validate(dlg: DialogState<AsyncExampleValues>) {
+        dlg.field("text").validate_async(async () => {
+            throw Error("upps");
+        });
+    }
+
+    const dlg = useDialogState_async(init, validate);
+
+    async function apply() {
+        cockpit.assert(dlg instanceof DialogState);
+
+        dlg.set_cancel(cancelCallback);
+
+        await async_sleep(1000);
+        Dialogs.close();
+    }
+
+    function top_changed(values: AsyncExampleValues) {
+        console.log("TOP", JSON.stringify(values));
+    }
+
+    let body;
+    if (!dlg) {
+        body = (
+            <Bullseye>
+                <Spinner />
+            </Bullseye>
+        );
+    } else if (dlg instanceof DialogError) {
+        body = null;
+    } else if (dlg instanceof DialogState) {
+        const fields = dlg.top(top_changed);
+        body = (
+            <Form isHorizontal>
+                <DialogTextInput label="Text" field={fields.sub("text")} />
+            </Form>
+        );
+    }
+
+    return (
+        <Modal
+            id="dialog"
+            position="top"
+            variant="medium"
+            isOpen
+            onClose={Dialogs.close}
+        >
+            <ModalHeader title="Async Demo" />
+            <ModalBody>
+                <DialogErrorMessage dialog={dlg} />
+                { body }
+            </ModalBody>
+            <ModalFooter>
+                <DialogActionButton dialog={dlg} action={apply}>
+                    Apply
+                </DialogActionButton>
+                <DialogCancelButton dialog={dlg} onClose={Dialogs.close} />
+            </ModalFooter>
+        </Modal>
+    );
+};
+
+const SimpleExampleButtons = () => {
+    const Dialogs = useDialogs();
+    const [cancelled, setCancelled] = useState(false);
+
+    return (
+        <>
+            <Button
+                id="open-with-func"
+                onClick={() => Dialogs.show(<ExampleDialogWithInitFunc />)}
+            >
+                Open init-func dialog
+            </Button>
+            <Button
+                id="open-async"
+                onClick={
+                    () => {
+                        setCancelled(false);
+                        Dialogs.show(<AsyncExampleDialog cancelCallback={() => setCancelled(true)} />);
+                    }
+                }
+            >
+                Open async dialog
+            </Button>
+            <div id="cancelled">
+                Cancelled: {cancelled ? "yes" : "no"}
+            </div>
+            <Button
+                id="open-error"
+                onClick={() => Dialogs.show(<AsyncExampleDialog throwError={1} />)}
+            >
+                Open Error dialog
+            </Button>
+            <Button
+                id="open-dialog-error"
+                onClick={() => Dialogs.show(<AsyncExampleDialog throwError={2} />)}
+            >
+                Open DialogError dialog
+            </Button>
+        </>
+    );
+};
+
+const FileChooserButton = () => {
+    const Dialogs = useDialogs();
+
+    async function loadFile(path: string) {
+        const data = await cockpit.file(path).read();
+        if (!data.startsWith("foo"))
+            throw new Error("Does not start with \"foo\"");
+    }
+
+    return (
+        <Button
+            id="open-file-chooser"
+            onClick={
+                () => Dialogs.show(
+                    <FileChooser
+                        title={"Select a file that starts with \"foo\""}
+                        actionLabel="Load"
+                        action={loadFile}
+                        filters={
+                            [
+                                {
+                                    label: "TXT files",
+                                    filter: (name, type) => type === "reg" && !!name.match("\\.txt$")
+                                },
+                            ]
+                        }
+                        shortcuts={
+                            async () => {
+                                await async_sleep(500);
+                                return [
+                                    { label: "Test files", path: "/var/lib/cockpittest" }
+                                ];
+                            }
+                        }
+                        collections={
+                            async () => {
+                                return [
+                                    {
+                                        label: "Some TXT files",
+                                        emptyLabel: "Nothing there",
+                                        list: async () => {
+                                            return [
+                                                "/var/lib/cockpittest/file-chooser-test/text/foo.txt",
+                                                "/var/lib/cockpittest/file-chooser-test/no-such-file.txt"
+                                            ];
+                                        }
+                                    }
+                                ];
+                            }
+                        }
+                    />
+                )
+            }
+        >
+            Open FileChooser
+        </Button>
+    );
+};
+
+const Demo = () => {
+    return (
+        <WithDialogs>
+            <Page isContentFilled className="no-masthead-sidebar">
+                <PageSection>
+                    <ExampleButton />
+                    <SimpleExampleButtons />
+                    <FileChooserButton />
+                </PageSection>
+            </Page>
+        </WithDialogs>
+    );
+};
+
+document.addEventListener("DOMContentLoaded", function() {
+    window.debugging = "dialog";
+    createRoot(document.getElementById('app')!).render(<Demo />);
+});

@@ -1,0 +1,341 @@
+/*
+ * Copyright (C) 2013 Red Hat, Inc.
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ */
+
+/* ---------------------------------------------------------------------------------------------------- */
+
+@use "page";
+@use "table";
+@use "nav";
+@use "@patternfly/patternfly/components/Menu/menu.css";
+@use "@patternfly/patternfly/utilities/Text/text.css";
+@use "@patternfly/patternfly/components/Icon/icon.css";
+
+:root {
+  --ct-color-host-accent: var(--pf-t--global--color--brand--default);
+  --ct-topnav-background: var(--pf-t--global--background--color--secondary--default);
+}
+
+#shell {
+    block-size: 100%;
+}
+
+/* Hacks on top for now */
+
+html.index-page body {
+  overflow: hidden;
+}
+
+#edit-machine-port {
+  inline-size: 100px;
+}
+
+#connecting {
+  block-size: 100%;
+  background-color: var(--ct-global--palette--black-250);
+  text-align: center;
+  padding-block-start: 120px;
+}
+
+/* index page */
+
+.display-language-modal {
+  /* Do not let the language menu expand to the end of the page */
+  .pf-v6-c-menu__content {
+    max-block-size: 20rem;
+    overflow: auto;
+  }
+}
+
+iframe.container-frame {
+  border: none;
+  inline-size: 100%;
+}
+
+// Page layout
+
+$phone: 767px;
+$desktop: $phone + 1px;
+
+.page {
+  --nav-width: 15rem;
+  display: grid;
+  inline-size: 100%;
+  block-size: 100%;
+
+  // Set masthead and toolbar to transparent, so the background shows through
+  // (including the accent line)
+
+  .pf-v6-c-masthead {
+    --pf-v6-c-masthead--BackgroundColor: transparent;
+  }
+
+  .pf-v6-c-toolbar {
+    --pf-v6-c-toolbar--BackgroundColor: transparent;
+  }
+
+  @media (max-width: $phone) {
+    grid-template-areas: "main main main" "sidebar switcher header";
+    grid-template-rows: 1fr 4rem;
+    grid-template-columns: 1fr auto auto;
+    overflow: hidden;
+
+    .area-ct-subnav {
+      grid-area: main;
+    }
+
+    .sidebar-toggle {
+      grid-area: sidebar;
+      display: flex;
+    }
+
+    > .header,
+    > .navbar,
+    > .sidebar-toggle {
+      // Line on bottom, Base color (with subtle glow)
+      background: linear-gradient(
+        to top,
+        var(--ct-color-host-accent),
+        var(--ct-color-host-accent) 3px,
+        transparent 3px
+      );
+      /* Toolbar needs visual separation between it and the content */
+      border-block-start: var(--pf-t--global--border--width--regular) solid var(--pf-t--global--border--color--default);
+    }
+
+    // Remove excess padding from masthead in mobile
+    .pf-v6-c-masthead {
+      --pf-v6-c-masthead--inset: 0;
+      --pf-v6-c-masthead--PaddingBlock: 0;
+      --pf-v6-c-masthead--PaddingInline: 0;
+      block-size: 100%;
+    }
+  }
+
+  @media (min-width: $desktop) {
+    // Shadow to the left, Line on top, Base color (with subtle glow)
+    background: linear-gradient(
+      to bottom,
+      var(--ct-color-host-accent),
+      var(--ct-color-host-accent) 3px,
+      transparent 3px
+    );
+
+    grid-template-areas: "switcher switcher header" "sidebar main main";
+    grid-template-rows: max-content 1fr;
+    grid-template-columns: minmax(min-content, var(--nav-width)) auto 1fr;
+
+    > .navbar {
+      grid-area: switcher;
+      margin-inline-end: calc(-1 * var(--pf-t--global--spacer--sm));
+    }
+
+    .sidebar {
+      grid-area: sidebar;
+    }
+
+    .sidebar-toggle {
+      grid-area: none;
+      display: none;
+    }
+
+    .view-hosts .sidebar-hosts,
+    .nav-system-menu {
+      /* Top of the navbar should start when the curve of the content area ends. This means the search entry should be bumped down a bit. */
+      padding-block-start: var(--pf-t--global--spacer--md);
+    }
+  }
+
+  // Shrink nav for VMs @ 1024×768 (and below)
+  @media (max-width: 1024px) and (max-height: 768px) and (orientation: landscape) {
+    --nav-width: 14rem;
+  }
+
+  .area-ct-content {
+    grid-area: main;
+  }
+
+  .header {
+    grid-area: header;
+  }
+}
+
+.hostkey-type {
+  font-size: small;
+}
+
+.hostkey-verify-help {
+  margin-block-end: 1.5em;
+}
+
+.early-failure {
+  block-size: 100%;
+}
+
+// Customize the about screen with the NaleHut logo
+.pf-v6-c-about-modal-box {
+  // Gray is best as it works in both light and dark mode
+  // Ideally About modal should allow setting this through DOM instead of CSS
+  // so we can color it easier.
+  //
+  // Or we can see about modifying it inline in scss and changing color there somehow
+  --pf-v6-c-about-modal-box--BackgroundImage: url(../shell/images/nalehut-shield-gray.svg);
+  --pf-v6-c-about-modal-box--BackgroundPosition: max(25rem, 143%) 10rem;
+  --pf-v6-c-about-modal-box--BackgroundSize--min-width: 786px;
+
+  .pf-v6-c-content {
+    /* Don't wrap package names */
+    --pf-v6-c-content--dl--GridTemplateColumns--dt: auto;
+    /* Tidy up the vertical space usage between packages */
+    --pf-v6-c-content--dl--RowGap: var(--pf-t--global--spacer--sm);
+  }
+
+  [dir="rtl"] {
+    --pf-v6-c-about-modal-box--BackgroundPosition: calc(100% - 30rem) 10rem;
+  }
+}
+
+/* ----------------------------------------------------------------------------------------------------
+ * NaleHut shell chrome
+ *
+ * Deep ink-teal navigation sidebar with the NaleHut brand row, plus a
+ * hairline under the masthead. Works in light and dark mode.
+ */
+
+.nav-system-menu {
+  --nalehut-nav-bg: linear-gradient(180deg, #0d3236 0%, #0a272c 100%);
+  --nalehut-nav-text: #cfe6e6;
+  --nalehut-nav-text-strong: #fff;
+  --nalehut-nav-text-muted: #7fa8ab;
+  --nalehut-nav-hover: rgb(127 212 210 / 10%);
+  --nalehut-nav-current: rgb(23 162 164 / 24%);
+
+  .pf-v6-theme-dark & {
+    --nalehut-nav-bg: linear-gradient(180deg, #0a2226 0%, #071a1e 100%);
+  }
+
+  background: var(--nalehut-nav-bg);
+  color: var(--nalehut-nav-text);
+
+  // Brand row above the search entry
+  .host-apps::before {
+    content: "NaleHut";
+    display: flex;
+    align-items: center;
+    gap: var(--pf-t--global--spacer--sm);
+    margin-block: var(--pf-t--global--spacer--md);
+    margin-inline: var(--pf-t--global--spacer--md);
+    padding-block: var(--pf-t--global--spacer--xs);
+    padding-inline: var(--pf-t--global--spacer--sm);
+    min-block-size: 2.25rem;
+    // The white shield variant stays legible on the dark sidebar
+    background: url(../shell/images/nalehut-shield-white.svg) left center / 1.75rem 1.75rem no-repeat;
+    padding-inline-start: 2.5rem;
+    font-size: var(--pf-t--global--font--size--md);
+    font-weight: var(--pf-t--global--font--weight--heading--default);
+    letter-spacing: 0.02em;
+    color: var(--nalehut-nav-text-strong);
+  }
+
+  // Search entry
+  .pf-v6-c-text-input-group {
+    background: rgb(255 255 255 / 6%);
+    border: 1px solid rgb(213 243 242 / 14%);
+    border-radius: var(--pf-t--global--border--radius--small);
+  }
+
+  .pf-v6-c-text-input-group__text-input {
+    color: #e6f5f5;
+
+    &::placeholder {
+      color: rgb(207 230 230 / 55%);
+    }
+  }
+
+  .pf-v6-c-text-input-group__utilities,
+  .pf-v6-c-text-input-group__icon {
+    color: var(--nalehut-nav-text-muted);
+  }
+
+  // Section headings (Apps / System / Tools)
+  .pf-v6-c-nav__section-title {
+    color: var(--nalehut-nav-text-muted);
+    font-size: var(--pf-t--global--font--size--body--sm);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  .nav-group-heading .nav-item.pf-v6-c-nav__section-title {
+    color: #9fd3d3;
+    text-transform: none;
+    letter-spacing: normal;
+  }
+
+  // Menu entries
+  .pf-v6-c-nav__link {
+    color: var(--nalehut-nav-text);
+    border-radius: var(--pf-t--global--border--radius--small);
+
+    &:hover,
+    &:focus {
+      background-color: var(--nalehut-nav-hover);
+      color: var(--nalehut-nav-text-strong);
+    }
+
+    &.pf-m-current {
+      background-color: var(--nalehut-nav-current);
+      color: var(--nalehut-nav-text-strong);
+      box-shadow: inset 3px 0 0 #42b2af;
+
+      .nav-item-name {
+        font-weight: var(--pf-t--global--font--weight--body--bold);
+      }
+    }
+
+    // Search match highlighting
+    mark {
+      background: #17a2a4;
+      color: #06282a;
+    }
+  }
+
+  .nav-item-hint {
+    color: var(--nalehut-nav-text-muted);
+  }
+
+  .non-menu-item {
+    color: var(--nalehut-nav-text-muted);
+
+    .pf-m-link {
+      color: #9fd3d3;
+    }
+  }
+
+  // Keyboard focus should be clearly visible on the dark surface
+  :focus-visible {
+    outline: 2px solid #7fd4d2;
+    outline-offset: 1px;
+  }
+}
+
+// Hairline between masthead and page content; keeps the chrome crisp
+// in both light and dark mode.
+#topnav .pf-v6-c-masthead {
+  border-block-end: 1px solid rgb(23 162 164 / 18%);
+
+  .pf-v6-theme-dark & {
+    border-block-end-color: rgb(127 212 210 / 14%);
+  }
+}
+
+// RTL: mirror the brand row shield and the current-item accent bar
+[dir="rtl"] .nav-system-menu {
+  .host-apps::before {
+    background-position: right center;
+  }
+
+  .pf-v6-c-nav__link.pf-m-current {
+    box-shadow: inset -3px 0 0 #42b2af;
+  }
+}

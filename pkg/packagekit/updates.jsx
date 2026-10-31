@@ -1,0 +1,1676 @@
+/*
+ * Copyright (C) 2017 Red Hat, Inc.
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ */
+import '../lib/patternfly/patternfly-6-cockpit.scss';
+import 'polyfills'; // once per application
+import 'cockpit-dark-theme'; // once per page
+
+import cockpit from "cockpit";
+import React from "react";
+import { createRoot } from 'react-dom/client';
+
+import { Badge } from "@patternfly/react-core/dist/esm/components/Badge/index.js";
+import { Button } from "@patternfly/react-core/dist/esm/components/Button/index.js";
+import { CodeBlock, CodeBlockCode } from "@patternfly/react-core/dist/esm/components/CodeBlock/index.js";
+import { Gallery } from "@patternfly/react-core/dist/esm/layouts/Gallery/index.js";
+import { Popover } from "@patternfly/react-core/dist/esm/components/Popover/index.js";
+import { Tooltip } from "@patternfly/react-core/dist/esm/components/Tooltip/index.js";
+import { Card, CardBody, CardHeader, CardTitle } from '@patternfly/react-core/dist/esm/components/Card/index.js';
+import { DescriptionList, DescriptionListDescription, DescriptionListGroup, DescriptionListTerm } from "@patternfly/react-core/dist/esm/components/DescriptionList/index.js";
+import { ExpandableSection } from "@patternfly/react-core/dist/esm/components/ExpandableSection/index.js";
+import { Flex, FlexItem } from "@patternfly/react-core/dist/esm/layouts/Flex/index.js";
+import { Grid, GridItem } from "@patternfly/react-core/dist/esm/layouts/Grid/index.js";
+import { LabelGroup } from "@patternfly/react-core/dist/esm/components/Label/index.js";
+import { Page, PageSection, } from "@patternfly/react-core/dist/esm/components/Page/index.js";
+import { Progress, ProgressSize } from "@patternfly/react-core/dist/esm/components/Progress/index.js";
+import { Spinner } from "@patternfly/react-core/dist/esm/components/Spinner/index.js";
+import { Stack, StackItem } from "@patternfly/react-core/dist/esm/layouts/Stack/index.js";
+import { Switch } from "@patternfly/react-core/dist/esm/components/Switch/index.js";
+import { Content, ContentVariants } from "@patternfly/react-core/dist/esm/components/Content/index.js";
+
+import {
+    BugIcon,
+    CheckIcon,
+    EnhancementIcon,
+    ExclamationCircleIcon,
+    ExclamationTriangleIcon,
+    RebootingIcon,
+    RedoIcon,
+    ProcessAutomationIcon,
+    SecurityIcon,
+} from "@patternfly/react-icons";
+import { TableText } from "@patternfly/react-table";
+import Markdown from "markdown-to-jsx";
+
+import { AutoUpdates, getBackend } from "./autoupdates.jsx";
+import { KpatchSettings, KpatchStatus } from "./kpatch";
+import { History, PackageList } from "./history";
+import { RestartServicesDialog } from './restartservices-dialog';
+import { TwoColumnContent, TwoColumnTitle } from "./two-column";
+import { page_status } from "notifications";
+import { EmptyStatePanel } from "cockpit-components-empty-state.jsx";
+import { ListingTable } from 'cockpit-components-table.jsx';
+import { ShutdownModal } from 'cockpit-components-shutdown.jsx';
+import { WithDialogs } from "dialogs.jsx";
+
+import { superuser } from 'superuser';
+import * as python from "python.js";
+import * as timeformat from "timeformat";
+
+import { debug, watchRedHatSubscription } from './utils';
+import { read_os_release } from "os-release.js";
+import callTracerScript from './callTracer.py';
+
+import "./updates.scss";
+import { Checkbox } from '@patternfly/react-core/dist/esm/components/Checkbox/index.js';
+import { Truncate } from '@patternfly/react-core/dist/esm/components/Truncate/index.js';
+import { Severity, TransactionExitStatus, UpdateProgressType, UpdateError } from '_internal/packagemanager-abstract';
+import { getPackageManager } from 'packagemanager';
+import { Icon } from '@patternfly/react-core/dist/esm/components/Icon/index.js';
+
+const _ = cockpit.gettext;
+
+// "available" heading is built dynamically
+const STATE_HEADINGS = {};
+const STATUS_STRINGS = {};
+const STATUS_LOG_STRINGS = {};
+
+const UPDATES = {
+    ALL: 0,
+    SECURITY: 1,
+    KPATCHES: 2,
+    SELECTED: 3,
+};
+
+/**
+ * PackageKit doesn't provide a way to determine what backends support
+ * partial updates, so we need to manually add the ones we know has partial
+ * package support
+ */
+const SUPPORTED_PARTIAL_UPDATE_BACKEND = [
+    "apt",
+    "dnf",
+    "dnf5",
+    "zypp",
+];
+
+export function is_partial_updates_supported(backend) {
+    return SUPPORTED_PARTIAL_UPDATE_BACKEND.includes(backend);
+}
+
+function init() {
+    STATE_HEADINGS.loading = _("Loading available updates, please wait...");
+    STATE_HEADINGS.locked = _("Some other program is currently using the package manager, please wait...");
+    STATE_HEADINGS.refreshing = _("Refreshing package information");
+    STATE_HEADINGS.uptodate = _("System is up to date");
+    STATE_HEADINGS.applying = _("Applying updates");
+    STATE_HEADINGS.updateError = _("Applying updates failed");
+    STATE_HEADINGS.loadError = _("Loading available updates failed");
+
+    STATUS_STRINGS[UpdateProgressType.DOWNLOADING] = _("Downloading");
+    STATUS_STRINGS[UpdateProgressType.INSTALLING] = _("Installing");
+    STATUS_STRINGS[UpdateProgressType.UPDATING] = _("Updating");
+    STATUS_STRINGS[UpdateProgressType.CLEANUP] = _("Setting up");
+    STATUS_STRINGS[UpdateProgressType.SIGCHECK] = _("Verifying");
+
+    STATUS_LOG_STRINGS[UpdateProgressType.DOWNLOADING] = _("Downloaded");
+    STATUS_LOG_STRINGS[UpdateProgressType.INSTALLING] = _("Installed");
+    STATUS_LOG_STRINGS[UpdateProgressType.UPDATING] = _("Updated");
+    STATUS_LOG_STRINGS[UpdateProgressType.CLEANUP] = _("Set up");
+    STATUS_LOG_STRINGS[UpdateProgressType.SIGCHECK] = _("Verified");
+}
+
+/** @import { UpdateDetail } from "_internal/packagemanager-abstract" */
+
+/**
+ * @typedef SelectedState
+ * @type {object}
+ * @property {Object.<string, UpdateDetail | null | undefined>} selected - (Un)selected updates.
+ */
+
+/**
+ * @typedef SelectedAction
+ * @type {object}
+ * @property {"ADD" | "REMOVE" | "RESET"} type - Type of reducer action
+ * @property {UpdateDetail[]=} updates - Added/removed items, only used by "ADD" and "REMOVE"
+ */
+
+const SelectedContext = React.createContext({ selected: {} });
+
+/**
+ * Selected store for conveniently updating the state of selected items.
+ * Updating all items naively causes performance issues if there are hundreds of updates
+ */
+const SelectedStore = props => {
+    /**
+     * @argument {SelectedState} state
+     * @argument {SelectedAction} action
+     */
+    const reducer = (state, action) => {
+        switch (action.type) {
+        case "ADD":
+            if (action.updates) {
+                for (const update of action.updates) {
+                    state.selected[update.id] = update;
+                }
+            }
+            break;
+        case "REMOVE":
+            if (action.updates) {
+                for (const update of action.updates) {
+                    delete state.selected[update.id];
+                }
+            }
+            break;
+        case "RESET":
+            state.selected = {};
+            break;
+        default:
+            break;
+        }
+
+        return { ...state };
+    };
+
+    const [state, dispatch] = React.useReducer(reducer, { selected: {} });
+
+    return <SelectedContext.Provider value={{ state, dispatch }} {...props} />;
+};
+
+/**
+ * @returns {{state: SelectedState, dispatch: (arg: SelectedAction) => void}}
+ */
+export const useSelected = () => React.useContext(SelectedContext);
+
+/**
+ * @param {{
+ *      onClick: (state: SelectedState) => void
+ *      securityOnly: boolean
+ *      num_updates: number
+ * }} props;
+ */
+const SelectedButton = (props) => {
+    const { state, dispatch } = useSelected();
+    const {
+        onClick,
+        securityOnly,
+        num_updates,
+    } = props;
+    const buttonId = securityOnly ? "install-security" : "install-all";
+
+    const buttonText = () => {
+        const selectedCount = Object.keys(state.selected).length;
+        if (selectedCount === 0 || selectedCount === num_updates) {
+            if (securityOnly) {
+                return _("Install security updates");
+            } else {
+                return _("Install all updates");
+            }
+        } else {
+            return `${_("Install selected updates")} (${selectedCount})`;
+        }
+    };
+
+    return (
+        <Button id={buttonId} ouiaId={buttonId} variant="primary" onClick={ () => { onClick(state); dispatch({ type: "RESET" }) } }>
+            {buttonText()}
+        </Button>
+    );
+};
+
+/**
+ * @param {{
+ *      info: UpdateDetail,
+ *      updates: UpdateDetail[],
+ * }} props;
+ */
+const SelectedSwitch = (props) => {
+    const { state, dispatch } = useSelected();
+    const checkboxId = () => `selectable-${props.info.id.replaceAll(';', '-')}`;
+
+    const dispatchChecked = checked => {
+        if (checked) {
+            dispatch({ type: "ADD", updates: props.updates });
+        } else {
+            dispatch({ type: "REMOVE", updates: props.updates });
+        }
+    };
+
+    const isChecked = () => {
+        return !!state.selected[props.info.id];
+    };
+
+    return (
+        <Checkbox
+            id={checkboxId()}
+            ouiaId={checkboxId()}
+            aria-label="select-update-checkbox"
+            isChecked={isChecked()}
+            onChange={(_event, checked) => dispatchChecked(checked)} />
+    );
+};
+
+/**
+ * @param {{
+*      updates: UpdateDetail[],
+* }} props;
+*/
+const WebConsoleRestartWarn = (props) => {
+    const { state } = useSelected();
+
+    if (calculateSelected(props.updates, state).findIndex((value) => value.id.includes("cockpit-ws")) === -1)
+        return null;
+
+    return (
+        <Flex flex={{ default: 'inlineFlex' }} className="cockpit-update-warning">
+            <FlexItem>
+                <ExclamationTriangleIcon className="ct-icon-exclamation-triangle cockpit-update-warning-icon" />
+                <strong className="cockpit-update-warning-text">
+                    <span className="pf-v6-screen-reader">{_("Danger alert:")}</span>
+                    {_("NaleHut will restart")}
+                </strong>
+            </FlexItem>
+            <FlexItem>
+                <Popover aria-label="More information popover"
+                         bodyContent={_("When the Web Console is restarted, you will no longer see progress information. However, the update process will continue in the background. Reconnect to continue watching the update process.")}>
+                    <Button variant="link" isInline>{_("More info...")}</Button>
+                </Popover>
+            </FlexItem>
+        </Flex>
+    );
+};
+
+/**
+ * @param {UpdateDetail[]} allUpdates
+ * @param {SelectedState} state
+ * @returns {UpdateDetail[]}
+ */
+function calculateSelected(allUpdates, state) {
+    const selected = Object.values(state.selected).filter(update => !!update);
+
+    if (selected.length === 0) {
+        return allUpdates;
+    } else {
+        return selected;
+    }
+}
+
+function deduplicate(list) {
+    return [...new Set(list)].sort();
+}
+
+// Insert comma strings in between elements of the list. Unlike list.join(",")
+// this does not stringify the elements, which we need to keep as JSX objects.
+function insertCommas(list) {
+    if (list.length <= 1)
+        return list;
+    return list.reduce((prev, cur) => [prev, ", ", cur]);
+}
+
+// Fedora changelogs are a wild mix of enumerations or not, headings, etc.
+// Remove that formatting to avoid an untidy updates overview list
+function cleanupChangelogLine(text) {
+    if (!text)
+        return text;
+
+    // enumerations
+    text = text.replace(/^[-* ]*/, "");
+
+    // headings
+    text = text.replace(/^=+\s+/, "").replace(/=+\s*$/, "");
+
+    return text.trim();
+}
+
+// Replace cockpit-wsinstance-https@[long_id] with a shorter string
+function shortenCockpitWsInstance(list) {
+    return list.map(item => item.startsWith('cockpit-wsinstance-https') ? 'cockpit-wsinstance-https@.' : item);
+}
+
+function count_security_updates(updates) {
+    let num_security = 0;
+    for (const u of updates)
+        if (u.severity === Severity.CRITICAL)
+            ++num_security;
+    return num_security;
+}
+
+function isKpatchPackage(name) {
+    return name.startsWith("kpatch-patch");
+}
+
+function count_kpatch_updates(updates) {
+    let num_kpatches = 0;
+    for (const u of updates)
+        if (isKpatchPackage(u.name))
+            ++num_kpatches;
+    return num_kpatches;
+}
+
+function find_highest_severity(updates) {
+    let max = Severity.LOW;
+    for (const u of updates)
+        if (u.severity > max)
+            max = u.severity;
+    return max;
+}
+
+/**
+ * Get appropriate icon for an update severity
+ *
+ * info: An Severity level
+ * secSeverity: If given, further classification of the severity of Severity.CRITICAL from the vendor_urls;
+ *              e. g. "critical", see https://access.redhat.com/security/updates/classification
+ * Returns: Icon JSX object
+ *
+ */
+function getSeverityIcon(info, secSeverity) {
+    let classes = "severity-icon";
+    if (secSeverity)
+        classes += " severity-" + secSeverity;
+    if (info === Severity.CRITICAL)
+        return <Icon isInline status="danger"><SecurityIcon aria-label={secSeverity || _("security")} className={classes} /></Icon>;
+    else if (info >= Severity.IMPORTANT)
+        return <Icon isInline className='pf-m-important'><BugIcon className={classes} aria-label={_("bug fix")} /></Icon>;
+    else
+        return <Icon isInline status="custom"><EnhancementIcon className={classes} aria-label={_("enhancement")} /></Icon>;
+}
+
+function getPageStatusSeverityIcon(severity) {
+    if (severity === Severity.CRITICAL)
+        return "security";
+    else if (severity >= Severity.IMPORTANT)
+        return "bug";
+    else
+        return "enhancement";
+}
+
+function getSeverityURL(urls) {
+    if (urls.length === 0)
+        return null;
+
+    // in ascending severity
+    const knownLevels = ["low", "moderate", "important", "critical"];
+    let highestIndex = -1;
+    let highestURL = null;
+
+    // search URLs for highest valid severity; by all means we expect an update to have at most one, but for paranoia..
+    urls.forEach(value => {
+        if (value.startsWith("https://access.redhat.com/security/updates/classification/#")) {
+            const i = knownLevels.indexOf(value.slice(value.indexOf("#") + 1));
+            if (i > highestIndex) {
+                highestIndex = i;
+                highestURL = value;
+            }
+        }
+    });
+    return highestURL;
+}
+
+function isSafeUrl(href) {
+    try {
+        const url = new URL(href);
+        return ["https:", "http:"].includes(url.protocol);
+    } catch {
+        return false;
+    }
+}
+
+const markdownOptions = {
+    overrides: {
+        a: {
+            props: {
+                rel: "noopener noreferrer",
+                target: "_blank",
+            },
+        },
+    },
+    forceInline: true,
+};
+
+function updateItem(info, pkgNames, key, partialUpdates) {
+    const bug_urls = (info.bug_urls || []).filter(isSafeUrl);
+    const cve_urls = (info.cve_urls || []).filter(isSafeUrl);
+    const vendor_urls = (info.vendor_urls || []).filter(isSafeUrl);
+
+    let bugs = null;
+    if (bug_urls.length > 0) {
+        // we assume a bug URL ends with a number; if not, show the complete URL
+        bugs = insertCommas(bug_urls.map(url => (
+            <a key={url} rel="noopener noreferrer" target="_blank" href={url}>
+                {url.match(/[0-9]+$/) || url}
+            </a>)
+        ));
+    }
+
+    let cves = null;
+    if (cve_urls.length > 0) {
+        cves = insertCommas(cve_urls.map(url => (
+            <a key={url} href={url} rel="noopener noreferrer" target="_blank">
+                {url.match(/[^/=]+$/)}
+            </a>)
+        ));
+    }
+
+    let errata = null;
+    if (vendor_urls.length > 0) {
+        errata = insertCommas(vendor_urls.filter(url => url.indexOf("/errata/") > 0).map(url => (
+            <a key={url} href={url} rel="noopener noreferrer" target="_blank">
+                {url.match(/[^/=]+$/)}
+            </a>)
+        ));
+        if (!errata.length)
+            errata = null; // simpler testing below
+    }
+
+    let secSeverityURL = getSeverityURL(vendor_urls);
+    const secSeverity = secSeverityURL ? secSeverityURL.slice(secSeverityURL.indexOf("#") + 1) : null;
+    const icon = getSeverityIcon(info.severity, secSeverity);
+    let type;
+    if (info.severity === Severity.CRITICAL) {
+        if (secSeverityURL)
+            secSeverityURL = <a rel="noopener noreferrer" target="_blank" href={secSeverityURL}>{secSeverity}</a>;
+        type = (
+            <Tooltip id="tip-severity" content={ secSeverity || _("security") }>
+                <span>
+                    {icon}
+                    { cve_urls.length > 0 && cve_urls.length}
+                </span>
+            </Tooltip>
+        );
+    } else {
+        const tip = (info.severity >= Severity.IMPORTANT) ? _("bug fix") : _("enhancement");
+        type = (
+            <Tooltip id="tip-severity" content={tip}>
+                <span>
+                    {icon}
+                    { bug_urls.length > 0 && bug_urls.length }
+                </span>
+            </Tooltip>
+        );
+    }
+
+    const pkgList = pkgNames.map((n, index) => (
+        <Tooltip key={n.name + n.arch} id="tip-summary" content={n.summary + " (" + n.arch + ")"}>
+            <span>{n.name + (index !== (pkgNames.length - 1) ? ", " : "")}</span>
+        </Tooltip>)
+    );
+    const pkgs = pkgList;
+    const pkgsTruncated = pkgList.slice(0, 4);
+
+    if (pkgList.length > 4)
+        pkgsTruncated.push(<span key="more">…</span>);
+
+    if (pkgNames.some(pkg => isKpatchPackage(pkg.name)))
+        pkgsTruncated.push(
+            <LabelGroup key={`${key}-kpatches-labelgroup`} className="kpatches-labelgroup">
+                {" "}<Badge color="blue">{_("patches")}</Badge>
+            </LabelGroup>
+        );
+
+    let descriptionFirstLine = (info.description || "").trim();
+    if (descriptionFirstLine.indexOf("\n") >= 0)
+        descriptionFirstLine = descriptionFirstLine.slice(0, descriptionFirstLine.indexOf("\n"));
+    descriptionFirstLine = cleanupChangelogLine(descriptionFirstLine);
+    let description;
+    if (info.markdown) {
+        descriptionFirstLine = <Markdown options={markdownOptions}>{descriptionFirstLine}</Markdown>;
+        description = <Markdown options={{ ...markdownOptions, forceInline: false }}>{info.description}</Markdown>;
+    } else {
+        description = <div className="changelog">{info.description}</div>;
+    }
+
+    const expandedContent = (
+        <Flex justifyContent={{ default: 'justifyContentSpaceBetween' }}>
+            <DescriptionList>
+                <DescriptionListGroup>
+                    <DescriptionListTerm>{_("Packages")}</DescriptionListTerm>
+                    <DescriptionListDescription>{pkgs}</DescriptionListDescription>
+                </DescriptionListGroup>
+                { cves
+                    ? <DescriptionListGroup>
+                        <DescriptionListTerm>{_("CVE")}</DescriptionListTerm>
+                        <DescriptionListDescription>{cves}</DescriptionListDescription>
+                    </DescriptionListGroup>
+                    : null }
+                { secSeverityURL
+                    ? <DescriptionListGroup>
+                        <DescriptionListTerm>{_("Severity")}</DescriptionListTerm>
+                        <DescriptionListDescription className="severity">{secSeverityURL}</DescriptionListDescription>
+                    </DescriptionListGroup>
+                    : null }
+                { errata
+                    ? <DescriptionListGroup>
+                        <DescriptionListTerm>{_("Errata")}</DescriptionListTerm>
+                        <DescriptionListDescription>{errata}</DescriptionListDescription>
+                    </DescriptionListGroup>
+                    : null }
+                { bugs
+                    ? <DescriptionListGroup>
+                        <DescriptionListTerm>{_("Bugs")}</DescriptionListTerm>
+                        <DescriptionListDescription>{bugs}</DescriptionListDescription>
+                    </DescriptionListGroup>
+                    : null }
+            </DescriptionList>
+            <Content>{description}</Content>
+        </Flex>
+    );
+
+    let selectColumn = [];
+    if (partialUpdates) {
+        selectColumn = [
+            { title: <SelectedSwitch info={info} updates={ pkgNames } />, props: { className: "select-update" } },
+        ];
+    }
+
+    return {
+        columns: [
+            ...selectColumn,
+            { title: pkgsTruncated },
+            { title: <TableText wrapModifier="truncate">{info.version}</TableText>, props: { className: "version" } },
+            { title: <TableText wrapModifier="nowrap">{type}</TableText>, props: { className: "type" } },
+            { title: descriptionFirstLine, props: { className: "changelog" } },
+        ],
+        props: {
+            key,
+            className: info.severity === Severity.CRITICAL ? ["error"] : [],
+        },
+        hasPadding: true,
+        expandedContent,
+    };
+}
+
+const UpdatesList = ({ updates, partialUpdates }) => {
+    const combined_updates = [];
+
+    // PackageKit doesn"t expose source package names, so group packages with the same version and changelog
+    // create a reverse version+changes → [id] map on iteration
+    const sameUpdate = {};
+    const packageNames = {};
+    for (const u of updates) {
+        // did we already see the same version and description? then merge
+        const hash = u.version + u.description;
+        const seenId = sameUpdate[hash];
+        if (seenId) {
+            packageNames[seenId].push(u);
+        } else {
+            // this is a new update
+            sameUpdate[hash] = u.id;
+            packageNames[u.id] = [u];
+            combined_updates.push(u);
+        }
+    }
+
+    // sort security first
+    combined_updates.sort((a, b) => {
+        if (a.severity === Severity.CRITICAL && b.severity !== Severity.CRITICAL)
+            return -1;
+        if (a.severity !== Severity.CRITICAL && b.severity === Severity.CRITICAL)
+            return 1;
+        return a.name.localeCompare(b.name);
+    });
+
+    let selectColumn = [];
+    if (partialUpdates) {
+        selectColumn = [
+            { title: "", props: { hidden: true, 'aria-label': _("Select update") } }
+        ];
+    }
+    return (
+        <ListingTable aria-label={_("Available updates")}
+                gridBreakPoint='grid-lg'
+                columns={[
+                    ...selectColumn,
+                    { title: _("Name"), props: { width: 40 } },
+                    { title: _("Version"), props: { width: 15 } },
+                    { title: _("Severity"), props: { width: 15 } },
+                    { title: _("Details"), props: { width: 30 } },
+                ]}
+                rows={combined_updates.map(update => {
+                    return updateItem(update,
+                                      packageNames[update.id].sort((a, b) => a.name > b.name),
+                                      update.id,
+                                      partialUpdates,
+                    );
+                })
+                } />
+    );
+};
+
+const formatPackageId = packageId => {
+    const pfields = packageId.split(";");
+    return pfields[0] + " " + pfields[1] + " (" + pfields[2] + ")";
+};
+
+// actions is a chronological list of { status, packageId } events that happen during applying updates
+// status: see STATUS_STRINGS
+const ApplyUpdates = ({ transactionProps, actions, rebootAfter, setRebootAfter }) => {
+    const remain = transactionProps.remaining_time
+        ? timeformat.distanceToNow(new Date().valueOf() + transactionProps.remaining_time * 1000)
+        : null;
+
+    let percentage = transactionProps.percentage || 0;
+    // PackageKit sets this to 101 initially
+    if (percentage > 100)
+        percentage = 0;
+
+    // scroll update log to the bottom, if it already is (almost) at the bottom
+    const log = document.getElementById("update-log");
+    if (log) {
+        if (log.scrollHeight - log.clientHeight <= log.scrollTop + 2)
+            log.scrollTop = log.scrollHeight;
+    }
+
+    const cancelButton = transactionProps.cancel
+        ? <Button variant="secondary" onClick={transactionProps.cancel} size="sm">{_("Cancel")}</Button>
+        : null;
+
+    if (actions.length === 0 && percentage === 0) {
+        return <EmptyStatePanel title={ _("Initializing...") }
+                                headingLevel="h5"
+                                secondary={cancelButton}
+                                loading
+        />;
+    }
+
+    const lastAction = actions[actions.length - 1];
+    // when resuming an upgrade, we did not get any Package signal yet; fall back to LastPackage
+    const curPackage = formatPackageId(lastAction?.packageId || transactionProps.last_package || "");
+    return (
+        <div className="progress-main-view">
+            <Grid hasGutter>
+                <GridItem span={12}>
+                    <div className="progress-description pf-v6-u-display-flex">
+                        <Spinner size="md" isInline />
+                        <strong>{STATUS_STRINGS[lastAction?.status] || STATUS_STRINGS[UpdateProgressType.UPDATING]}</strong>
+                        &nbsp;
+                        <Truncate content={curPackage} />
+                    </div>
+                    <Progress title={remain}
+                              aria-label={remain ? _("Time remaining: ") : _("Update progress")}
+                              value={percentage}
+                              size={ProgressSize.sm}
+                              className="pf-v6-u-mb-xs" />
+                </GridItem>
+
+                <GridItem span={3}>{cancelButton}</GridItem>
+
+                <GridItem span={12}>
+                    <Switch id="reboot-after" isChecked={rebootAfter}
+                            label={ _("Reboot after completion") }
+                            onChange={setRebootAfter} />
+                </GridItem>
+
+                <GridItem span={12} className="update-log">
+                    <ExpandableSection toggleText={_("View update log")} onToggle={() => {
+                        // always scroll down on expansion
+                        const log = document.getElementById("update-log");
+                        log.scrollTop = log.scrollHeight;
+                    }}>
+                        <div id="update-log" className="update-log-content">
+                            <table>
+                                <tbody>
+                                    { actions.slice(0, -1).map((action, i) => (
+                                        <tr key={action.packageId + i}>
+                                            <th>{STATUS_LOG_STRINGS[action.status] || STATUS_LOG_STRINGS[UpdateProgressType.UPDATING]}</th>
+                                            <td>{formatPackageId(action.packageId)}</td>
+                                        </tr>)) }
+                                </tbody>
+                            </table>
+                        </div>
+                    </ExpandableSection>
+                </GridItem>
+            </Grid>
+        </div>
+    );
+};
+
+const UpdateSuccess = ({ onIgnore, openServiceRestartDialog, openRebootDialog, restart, manual, reboot, checkRestartAvailable, history }) => {
+    if (!checkRestartAvailable) {
+        /* tracer is not available any more in RHEL 10; as a special case, if only kpatch and kernel were
+         * updated, don't reboot (as that's their whole raison d'être) */
+        const pkgs = Object.keys(history[0]?.packages ?? {});
+        const only_kpatch = pkgs.filter(p => p.startsWith("kpatch")).length > 0 &&
+                            pkgs.filter(p => !p.startsWith("kernel") && !p.startsWith("kpatch")).length === 0;
+
+        const paragraph = only_kpatch ? null : _("Updated packages may require a reboot to take effect.");
+        const actions = only_kpatch
+            ? <Button id="ignore" variant="primary" onClick={onIgnore}>{_("Continue")}</Button>
+            : <>
+                <Button id="reboot-system" variant="primary" onClick={openRebootDialog}>{_("Reboot system...")}</Button>
+                <Button id="ignore" variant="link" onClick={onIgnore}>{_("Ignore")}</Button>
+            </>;
+
+        return (<>
+            <EmptyStatePanel icon={RebootingIcon}
+                             title={ _("Update was successful") }
+                             headingLevel="h5"
+                             paragraph={paragraph}
+                             secondary={actions} />
+            { history[0]?.packages &&
+            <div className="flow-list-blank-slate">
+                <ExpandableSection toggleText={_("Package information")}>
+                    <PackageList packages={history[0].packages} />
+                </ExpandableSection>
+            </div>
+            }
+        </>);
+    }
+
+    const entries = [];
+    if (reboot.length > 0) {
+        entries.push({
+            columns: [
+                {
+                    title: <TwoColumnTitle icon={<RebootingIcon />}
+                                           str={cockpit.format(cockpit.ngettext("$0 package needs a system reboot",
+                                                                                "$0 packages need a system reboot",
+                                                                                reboot.length),
+                                                               reboot.length)} />
+                },
+            ],
+            props: { key: "reboot", id: "reboot-row" },
+            hasPadding: true,
+            expandedContent: <TwoColumnContent list={reboot} />,
+        });
+    }
+
+    if (restart.length > 0) {
+        entries.push({
+            columns: [
+                {
+                    title: <TwoColumnTitle icon={<ProcessAutomationIcon />}
+                                           str={cockpit.format(cockpit.ngettext("$0 service needs to be restarted",
+                                                                                "$0 services need to be restarted",
+                                                                                restart.length),
+                                                               restart.length)} />
+                },
+            ],
+            props: { key: "service", id: "service-row" },
+            hasPadding: true,
+            expandedContent: <TwoColumnContent list={restart} />,
+        });
+    }
+
+    if (manual.length > 0) {
+        entries.push({
+            columns: [
+                {
+                    title: <TwoColumnTitle icon={<ProcessAutomationIcon />}
+                                           str={_("Some software needs to be restarted manually")} />
+                }
+            ],
+            props: { key: "manual", id: "manual-row" },
+            hasPadding: true,
+            expandedContent: <TwoColumnContent list={manual} />,
+        });
+    }
+
+    const showReboot = reboot.length > 0 || manual.length > 0;
+
+    return (<>
+        <EmptyStatePanel title={ _("Update was successful") }
+            headingLevel="h5"
+            secondary={
+                <>
+                    { entries.length > 0 && <ListingTable aria-label={_("Update Success Table")}
+                        columns={[{ title: _("Info") }]}
+                        showHeader={false}
+                        className="updates-success-table"
+                        rows={entries} /> }
+                    <div className="update-success-actions">
+                        { showReboot && <Button id="reboot-system" variant="primary" onClick={openRebootDialog}>{_("Reboot system...")}</Button> }
+                        { restart.length > 0 && <Button id="choose-service" variant={showReboot ? "secondary" : "primary"} onClick={openServiceRestartDialog}>{_("Restart services...")}</Button> }
+                        { reboot.length > 0 || restart.length > 0 || manual.length > 0
+                            ? <Button id="ignore" variant="link" onClick={onIgnore}>{_("Ignore")}</Button>
+                            : <Button id="ignore" variant="primary" onClick={onIgnore}>{_("Continue")}</Button> }
+                    </div>
+                </>
+            } />
+        { history[0]?.packages &&
+        <div className="flow-list-blank-slate">
+            <ExpandableSection toggleText={_("Package information")}>
+                <PackageList packages={history[0].packages} />
+            </ExpandableSection>
+        </div>
+        }
+    </>);
+};
+
+const UpdatesStatus = ({ updates, highestSeverity, timeSinceRefresh, restartPackages, onValueChanged }) => {
+    const numUpdates = updates.length;
+    const numSecurity = count_security_updates(updates);
+    const numRestartServices = restartPackages.daemons.length;
+    const numManualSoftware = restartPackages.manual.length;
+    const numRebootPackages = restartPackages.reboot.length;
+    let lastChecked;
+    // PackageKit returns G_MAXUINT if the db was never checked.
+    if (timeSinceRefresh !== null && timeSinceRefresh !== 2 ** 32 - 1)
+        lastChecked = cockpit.format(_("Last checked: $0"), timeformat.distanceToNow(new Date().valueOf() - timeSinceRefresh * 1000));
+
+    const notifications = [];
+    if (numUpdates > 0) {
+        if (numUpdates === numSecurity) {
+            const stateStr = cockpit.ngettext("$0 security fix available", "$0 security fixes available", numSecurity);
+            notifications.push({
+                id: "security-updates-available",
+                stateStr: cockpit.format(stateStr, numSecurity),
+                icon: getSeverityIcon(highestSeverity),
+                secondary: <Content id="last-checked" component={ContentVariants.small}>{lastChecked}</Content>
+            });
+        } else {
+            let stateStr = cockpit.ngettext("$0 update available", "$0 updates available", numUpdates);
+            if (numSecurity > 0)
+                stateStr += cockpit.ngettext(", including $1 security fix", ", including $1 security fixes", numSecurity);
+            notifications.push({
+                id: "updates-available",
+                stateStr: cockpit.format(stateStr, numUpdates, numSecurity),
+                icon: getSeverityIcon(highestSeverity),
+                secondary: <Content id="last-checked" component={ContentVariants.small}>{lastChecked}</Content>
+            });
+        }
+    } else if (!numRestartServices && !numRebootPackages && !numManualSoftware) {
+        notifications.push({
+            id: "system-up-to-date",
+            stateStr: STATE_HEADINGS.uptodate,
+            icon: <CheckIcon color="green" />,
+            secondary: <Content id="last-checked" component={ContentVariants.small}>{lastChecked}</Content>
+        });
+    }
+
+    if (numRebootPackages > 0) {
+        const stateStr = cockpit.ngettext("$0 package needs a system reboot", "$0 packages need a system reboot", numRebootPackages);
+        notifications.push({
+            id: "packages-need-reboot",
+            stateStr: cockpit.format(stateStr, numRebootPackages),
+            icon: <RebootingIcon />,
+            secondary: <Button variant="danger" onClick={() => onValueChanged("showRebootSystemDialog", true)}>
+                {_("Reboot system...")}
+            </Button>
+        });
+    }
+
+    if (numRestartServices > 0) {
+        const stateStr = cockpit.ngettext("$0 service needs to be restarted", "$0 services need to be restarted", numRestartServices);
+        notifications.push({
+            id: "services-need-restart",
+            stateStr: cockpit.format(stateStr, numRestartServices),
+            icon: <ProcessAutomationIcon />,
+            secondary: <Button variant="primary" onClick={() => onValueChanged("showRestartServicesDialog", true)}>
+                {_("Restart services...")}
+            </Button>
+        });
+    }
+
+    if (numManualSoftware > 0) {
+        notifications.push({
+            id: "processes-need-restart",
+            stateStr: _("Some software needs to be restarted manually"),
+            icon: <ProcessAutomationIcon />,
+            secondary: <Content component={ContentVariants.small}>{restartPackages.manual.join(", ")}</Content>
+        });
+    }
+
+    return (<Stack hasGutter>
+        { notifications.map(notification => (
+            <StackItem key={notification.id}>
+                <Flex flexWrap={{ default: 'nowrap' }} id={notification.id}>
+                    <FlexItem>
+                        {notification.icon}
+                    </FlexItem>
+                    <FlexItem>
+                        <Stack>
+                            <StackItem>
+                                <Content component={ContentVariants.p}>{notification.stateStr}</Content>
+                            </StackItem>
+                            <StackItem>
+                                { notification.secondary }
+                            </StackItem>
+                        </Stack>
+                    </FlexItem>
+                </Flex>
+            </StackItem>
+        ))}
+    </Stack>);
+};
+
+class CardsPage extends React.Component {
+    constructor() {
+        super();
+        this.state = {
+            autoupdates_backend: undefined,
+        };
+    }
+
+    componentDidMount() {
+        getBackend(this.props.backend).then(b => { this.setState({ autoupdates_backend: b }) });
+    }
+
+    render() {
+        const cardContents = [];
+        let settingsContent = null;
+        const statusContent = <Stack hasGutter>
+            <UpdatesStatus key="updates-status"
+                                updates={this.props.updates}
+                                onValueChanged={this.props.onValueChanged}
+                                restartPackages={this.props.restartPackages}
+                                highestSeverity={this.props.highestSeverity}
+                                timeSinceRefresh={this.props.timeSinceRefresh} />
+            <KpatchStatus />
+        </Stack>;
+
+        if (this.state.autoupdates_backend) {
+            settingsContent = <Stack hasGutter>
+                <AutoUpdates privileged={this.props.privileged} packagekit_backend={this.props.backend} initial_backend={this.state.autoupdates_backend} />
+                {cockpit.info.os_release && cockpit.info.os_release?.ID === "rhel" &&
+                <KpatchSettings privileged={this.props.privileged} />
+                }
+            </Stack>;
+        }
+
+        cardContents.push({
+            id: "status",
+            className: settingsContent !== null ? "ct-card-info" : "",
+            title: _("Status"),
+            actions: (<Tooltip content={_("Check for updates")}>
+                <Button icon={<RedoIcon />} variant="secondary" onClick={this.props.handleRefresh} />
+            </Tooltip>),
+            body: statusContent,
+        });
+
+        if (settingsContent !== null) {
+            cardContents.push({
+                id: "settings",
+                className: "ct-card-info",
+                title: _("Settings"),
+                body: settingsContent,
+            });
+        }
+
+        if (this.props.state === "available") { // automatic updates are not tracked by PackageKit, hide history when they are enabled
+            cardContents.push({
+                id: "available-updates",
+                title: _("Available updates"),
+                actions: (<div className="pk-updates--header--actions">
+                    <WebConsoleRestartWarn updates={this.props.updates} />
+                    {this.props.applyKpatches}
+                    {this.props.applySecurity}
+                    {this.props.applySelected}
+                </div>),
+                containsList: true,
+                body: <UpdatesList updates={this.props.updates} partialUpdates={this.props.partialUpdates} />
+            });
+        }
+
+        if ((!this.state.autoupdates_backend || !this.state.autoupdates_backend.enabled) && this.props.history.length > 0) { // automatic updates are not tracked by PackageKit, hide history when they are enabled
+            cardContents.push({
+                id: "update-history",
+                title: _("Update history"),
+                containsList: true,
+                body: <History packagekit={this.props.history} />
+            });
+        }
+
+        return cardContents.map(card => {
+            return (
+                <Card key={card.id} className={card.className} id={card.id}>
+                    <CardHeader actions={{ actions: card.actions }}>
+                        <CardTitle component="h2">{card.title}</CardTitle>
+                    </CardHeader>
+                    <CardBody className={card.containsList ? "contains-list" : null}>
+                        {card.body}
+                    </CardBody>
+                </Card>
+            );
+        });
+    }
+}
+
+class OsUpdates extends React.Component {
+    constructor() {
+        super();
+        this.state = {
+            state: "loading",
+            errorMessages: [],
+            updates: [],
+            timeSinceRefresh: null,
+            loadPercent: null,
+            cockpitUpdate: false,
+            haveOsRepo: null,
+            applyTransactionProps: {},
+            applyActions: [],
+            history: [],
+            unregistered: false,
+            privileged: false,
+            autoUpdatesEnabled: undefined,
+            restartPackages: { daemons: [], manual: [], reboot: [] },
+            checkRestartAvailable: false,
+            checkRestartRunning: false,
+            showRestartServicesDialog: false,
+            showRebootSystemDialog: false,
+            backend: "",
+            rebootAfterSuccess: false,
+            packageManager: null,
+            partialUpdates: false,
+        };
+        this.handleLoadError = this.handleLoadError.bind(this);
+        this.handleRefresh = this.handleRefresh.bind(this);
+        this.loadUpdates = this.loadUpdates.bind(this);
+        this.onValueChanged = this.onValueChanged.bind(this);
+        this.checkNeedsRestart = this.checkNeedsRestart.bind(this);
+    }
+
+    onValueChanged(key, value) {
+        this.setState({ [key]: value });
+    }
+
+    async componentDidMount() {
+        this._mounted = true;
+        this.checkNeedsRestart();
+
+        superuser.addEventListener("changed", this.handleSuperUserChange);
+
+        // HACK: force usage of PackageKit backend
+        const packageManager = await getPackageManager(true);
+        const backend = await packageManager.get_backend();
+        const partialUpdates = is_partial_updates_supported(backend);
+        this.setState({ packageManager, backend, partialUpdates });
+
+        // check if there is an upgrade in progress already; if so, switch to "applying" state right away
+        try {
+            const running_update = await packageManager.get_running_update({
+                on_package: (status, packageId) => this.setState(prevState =>
+                    ({ applyActions: [...prevState.applyActions, { status, packageId }] })
+                ),
+                on_notify: (notify) => this.setState(prevState =>
+                    ({ applyTransactionProps: { ...prevState.applyTransactionProps, ...notify } })
+                ),
+            });
+
+            if (!this._mounted)
+                return;
+
+            if (running_update) {
+                this.setState({ state: "applying", applyTransactionProps: {}, applyActions: [] });
+                this.handleRunningUpdate(running_update.promise);
+            } else {
+                // no running updates found, proceed to showing available updates
+                this.initialLoadOrRefresh();
+            }
+        } catch (err) {
+            this.handleLoadError(err);
+        }
+    }
+
+    componentWillUnmount() {
+        this._mounted = false;
+        superuser.removeEventListener("changed", this.handleSuperUserChange);
+    }
+
+    handleSuperUserChange = () => {
+        this.setState({ privileged: superuser.allowed });
+        // get out of error state when switching from unprivileged to privileged
+        if (superuser.allowed && this.state.state.indexOf("Error") >= 0)
+            this.loadUpdates();
+    };
+
+    checkNeedsRestart() {
+        this.setState({ checkRestartRunning: true });
+        return python.spawn(callTracerScript, undefined, { err: "message", superuser: "require" })
+                .then(output => {
+                    debug("tracer succeeded, output:", output);
+                    const restartPackages = JSON.parse(output);
+                    // Filter out duplicates
+                    restartPackages.reboot = deduplicate(shortenCockpitWsInstance(restartPackages.reboot));
+                    restartPackages.daemons = deduplicate(shortenCockpitWsInstance(restartPackages.daemons));
+                    restartPackages.manual = deduplicate(shortenCockpitWsInstance(restartPackages.manual));
+                    debug("tracer parsed restartPackages:", JSON.stringify(restartPackages));
+                    this.setState({ checkRestartAvailable: true, checkRestartRunning: false, restartPackages });
+                })
+                .catch((exception, data) => {
+                    // tracer not installed or supported (like on Arch)? then fall back to dnf needs-restarting
+                    if (exception.message?.includes("ModuleNotFoundError") ||
+                        exception.message?.includes("UnsupportedDistribution")) {
+                        debug('tracer not installed:', JSON.stringify(exception), "trying dnf needs-restarting");
+                        return this.checkDnfNeedsRestarting();
+                    }
+
+                    // log the error except for some common cases: polkit does not allow it
+                    if (exception.problem !== "access-denied" &&
+                        // or unprivileged session
+                        exception.problem !== "authentication-failed" &&
+                        // or the session goes away while checking
+                        exception.problem !== "terminated")
+                        console.error(`Tracer failed: "${JSON.stringify(exception)}", data: "${JSON.stringify(data)}"`);
+                    else
+                        debug('tracer failed for uninteresting reason:', JSON.stringify(exception));
+
+                    // When tracer fails, act like it's not available (demand reboot after every update)
+                    this.setState({
+                        checkRestartAvailable: false,
+                        checkRestartRunning: false,
+                        restartPackages: { reboot: [], daemons: [], manual: [] },
+                    });
+                });
+    }
+
+    checkDnfNeedsRestarting() {
+        const restartPackages = { reboot: [], daemons: [], manual: [] };
+
+        // needs-restarting has no machine-readable API: https://issues.redhat.com/browse/RHEL-56139
+        // dnf5 needs-restarting also has no machine-readable API: https://github.com/rpm-software-management/dnf5/issues/2341
+        // --exclude-services was added much later, so check that first
+        return cockpit.spawn(["dnf", "needs-restarting", "--exclude-services"], { err: "message", superuser: "require" })
+                .then(outManual => {
+                    debug("dnf needs-restarting --exclude-services succeeded:", outManual);
+                    // format: "pid : argv", e.g. "1234 : mydaemon 3600"
+                    outManual.trim()
+                            .split("\n")
+                            // HACK: https://issues.redhat.com/browse/RHEL-84657
+                            .filter(line => line.match(/^\d+ : /))
+                            .forEach(line => !line || restartPackages.manual.push(line));
+
+                    return Promise.allSettled([
+                        cockpit.spawn(["dnf", "needs-restarting", "--services"], { err: "message", superuser: "require" }),
+                        // we can't get stdout for a failing process, thus needs script
+                        cockpit.script("! dnf needs-restarting --reboothint", undefined, { err: "message", superuser: "require" }),
+                    ])
+                            .then(([serviceResult, rebootResult]) => {
+                                // --services format: one unit name per line
+                                if (serviceResult.status === 'fulfilled') {
+                                    debug("dnf needs-restarting --services succeeded:", serviceResult.value);
+                                    serviceResult.value.trim()
+                                            .split("\n")
+                                            // HACK: https://issues.redhat.com/browse/RHEL-84657
+                                            .filter(line => line.endsWith(".service"))
+                                            .forEach(line => restartPackages.daemons.push(line));
+                                } else {
+                                    console.error("dnf needs-restarting --services failed:", JSON.stringify(serviceResult.reason));
+                                }
+
+                                // --reboothint format: "  * kernel-rt" plus header/footer; exit nonzero iff reboot required, inverted above
+                                if (rebootResult.status === 'fulfilled') {
+                                    debug("dnf needs-restarting --reboothint exited nonzero, wants reboot:", rebootResult.value);
+                                    rebootResult.value.split("\n").forEach(line => {
+                                        if (line.startsWith("  * "))
+                                            restartPackages.reboot.push(line.substring(4));
+                                    });
+                                } else {
+                                    debug("dnf needs-restarting --reboothint exited zero, no reboot");
+                                }
+
+                                debug("dnf needs-restarting parsed packages:", JSON.stringify(restartPackages));
+                                this.setState({ checkRestartAvailable: true, checkRestartRunning: false, restartPackages });
+                            });
+                })
+                .catch(ex => {
+                    // log the error except for some common cases: no dnf
+                    if (ex.problem !== "not-found" &&
+                        // plugin does not support --exclude-services
+                        !ex.message.includes("usage:") &&
+                        // polkit does not allow it
+                        ex.problem !== "access-denied" &&
+                        // or unprivileged session
+                        ex.problem !== "authentication-failed" &&
+                        // or the session goes away while checking
+                        ex.problem !== "terminated")
+                        console.error("dnf needs-restarting failed:", ex.toString());
+
+                    // act like it's not available (demand reboot after every update)
+                    this.setState({ checkRestartAvailable: false, checkRestartRunning: false, restartPackages });
+                });
+    }
+
+    handleLoadError(ex) {
+        console.warn("loading available updates failed:", JSON.stringify(ex));
+
+        if (!this._mounted)
+            return;
+
+        if (ex.problem === "not-found" || ex.name?.includes("DBus.Error.ServiceUnknown"))
+            ex = _("PackageKit is not installed");
+        this.setState(prevState => ({ errorMessages: [...prevState.errorMessages, ex.detail || ex.message || ex], state: "loadError" }));
+    }
+
+    loadUpdates() {
+        let cockpitUpdate = false;
+
+        this.setState({ state: "loading" });
+
+        // check if there is an available version of coreutils; this is a heuristics for unregistered RHEL
+        // systems to see if they need a subscription to get "proper" OS updates
+        this.state.packageManager.is_available(["coreutils"])
+                .then((have_coreutils) => this.setState({ haveOsRepo: have_coreutils }),
+                      ex => console.warn("Resolving coreutils failed:", JSON.stringify(ex)))
+                .then(() => this.state.packageManager.get_updates(true, null).then(updates => {
+                    debug("GetUpdates result:", updates);
+                    if (updates.length) {
+                        for (const update of updates) {
+                            if (update.name === 'cockpit-ws') {
+                                cockpitUpdate = true;
+                            // Arch Linux has no cockpit-ws package
+                            } else if (update.name === 'cockpit' && this.state.backend === "alpm") {
+                                cockpitUpdate = true;
+                            }
+                        }
+                        this.setState({ updates, cockpitUpdate, state: "available" });
+                    } else {
+                        this.setState({ updates: [], state: "uptodate" });
+                    }
+                    this.loadHistory();
+                }))
+                .catch(this.handleLoadError);
+    }
+
+    async loadHistory() {
+        try {
+            const history = await this.state.packageManager.get_history();
+            this.setState({ history });
+        } catch (exc) {
+            console.warn("Failed to load old transactions (history):", exc);
+        }
+    }
+
+    initialLoadOrRefresh() {
+        watchRedHatSubscription(registered => this.setState({ unregistered: !registered }));
+
+        cockpit.addEventListener("visibilitychange", () => {
+            if (!cockpit.hidden)
+                this.loadOrRefresh(false);
+        });
+
+        if (!cockpit.hidden)
+            this.loadOrRefresh(true);
+        else
+            this.loadUpdates();
+    }
+
+    async loadOrRefresh(always_load) {
+        try {
+            const seconds = await this.state.packageManager.get_last_refresh_time();
+            this.setState({ timeSinceRefresh: seconds });
+
+            // automatically trigger refresh for ≥ 1 day or if never refreshed
+            if (seconds >= 24 * 3600 || seconds < 0)
+                this.handleRefresh();
+            else if (always_load)
+                this.loadUpdates();
+        } catch (exc) {
+            this.handleLoadError(exc);
+        }
+    }
+
+    async handleRunningUpdate(promise) {
+        try {
+            this.setState({ applyTransactionProps: {}, applyActions: [] });
+            const status = await promise;
+
+            switch (status) {
+            case TransactionExitStatus.SUCCESS:
+                this.setState({ state: "loading", loadPercent: null });
+                await this.loadHistory();
+
+                if (this.state.checkRestartAvailable) {
+                    await this.checkNeedsRestart();
+                }
+
+                this.setState({ state: "updateSuccess", loadPercent: null });
+                break;
+            case TransactionExitStatus.CANCELLED:
+                if (this.state.checkRestartAvailable) {
+                    this.setState({ state: "loading", loadPercent: null });
+                    this.checkNeedsRestart();
+                }
+
+                this.loadUpdates();
+                break;
+            default:
+                this.setState({
+                    applyTransactionProps: {},
+                    applyActions: [],
+                    errorMessages: [],
+                    state: "updateError",
+                });
+                break;
+            }
+        } catch (ex) {
+            this.setState({
+                applyTransactionProps: {},
+                applyActions: [],
+                errorMessages: ex instanceof UpdateError ? ex.messages : [ex.message],
+                state: "updateError",
+            });
+        }
+    }
+
+    /**
+     * @param {SelectedState=} selected
+     */
+    applyUpdates(type, selected) {
+        let updates = [...this.state.updates];
+        if (type === UPDATES.SECURITY)
+            updates = updates.filter(update => update.severity === Severity.CRITICAL);
+        if (type === UPDATES.KPATCHES) {
+            updates = updates.filter(update => isKpatchPackage(update.name));
+        }
+        if (type === UPDATES.SELECTED && selected) {
+            updates = calculateSelected(updates, selected);
+        }
+
+        this.setState({ state: "applying", applyTransactionProps: {}, applyActions: [] });
+
+        this.handleRunningUpdate(
+            this.state.packageManager.update_packages(updates, {
+                on_package: (status, packageId) => this.setState(prevState =>
+                    ({ applyActions: [...prevState.applyActions, { status, packageId }] })
+                ),
+                on_notify: (notify) => this.setState(prevState =>
+                    ({ applyTransactionProps: { ...prevState.applyTransactionProps, ...notify } })
+                ),
+            })
+        );
+    }
+
+    renderContent() {
+        let applySecurity;
+        let applyKpatches;
+        let applySelected;
+
+        /* On unregistered RHEL systems we need some heuristics: If the "main" OS repos (which provide coreutils) require
+         * a subscription, then point this out and don't show available updates, even if there are some auxiliary
+         * repositories enabled which don't require subscriptions. But there are a lot of cases (cloud repos, nightly internal
+         * repos) which don't need a subscription, there it would just be confusing */
+        if (this.state.unregistered && this.state.haveOsRepo === false) {
+            page_status.set_own({
+                type: "warning",
+                title: _("Not registered"),
+                details: {
+                    link: "subscriptions",
+                }
+            });
+
+            return <EmptyStatePanel
+                title={_("This system is not registered")}
+                headingLevel="h5"
+                paragraph={ _("To get software updates, this system needs to be registered with Red Hat, either using the Red Hat Customer Portal or a local subscription server.") }
+                icon={ExclamationCircleIcon}
+                action={ _("Register…") }
+                onAction={ () => cockpit.jump("/subscriptions", cockpit.transport.host) }
+            />;
+        }
+
+        switch (this.state.state) {
+        case "loading":
+        case "refreshing":
+        case "locked":
+            page_status.set_own({
+                type: null,
+                title: _("Checking for package updates..."),
+                details: {
+                    link: false,
+                    pficon: "spinner",
+                }
+            });
+
+            if (this.state.loadPercent)
+                return <Progress value={this.state.loadPercent} title={STATE_HEADINGS[this.state.state]} />;
+            else
+                return <EmptyStatePanel loading title={ _("Checking software status")}
+                                        headingLevel="h5"
+                                        paragraph={STATE_HEADINGS[this.state.state]}
+                />;
+
+        case "available":
+        {
+            const num_updates = this.state.updates.length;
+            const num_security_updates = count_security_updates(this.state.updates);
+            const num_kpatches = count_kpatch_updates(this.state.updates);
+            const highest_severity = find_highest_severity(this.state.updates);
+
+            applySelected = <SelectedButton
+                num_updates={num_updates}
+                securityOnly={num_updates === num_security_updates}
+                onClick={(items) => this.applyUpdates(UPDATES.SELECTED, items)} />;
+
+            if (num_security_updates > 0 && num_updates > num_security_updates) {
+                applySecurity = (
+                    <Button id="install-security" variant="secondary" onClick={ () => this.applyUpdates(UPDATES.SECURITY) }>
+                        {_("Install security updates")}
+                    </Button>);
+            }
+
+            if (num_kpatches > 0) {
+                applyKpatches = (
+                    <Button id="install-kpatches" variant="secondary" onClick={ () => this.applyUpdates(UPDATES.KPATCHES) }>
+                        {_("Install kpatch updates")}
+                    </Button>);
+            }
+
+            let text;
+            if (highest_severity === Severity.CRITICAL)
+                text = _("Security updates available");
+            else if (highest_severity >= Severity.IMPORTANT)
+                text = _("Bug fix updates available");
+            else if (highest_severity >= Severity.LOW)
+                text = _("Enhancement updates available");
+            else
+                text = _("Updates available");
+
+            page_status.set_own({
+                type: num_security_updates > 0 ? "warning" : "info",
+                title: text,
+                details: {
+                    pficon: getPageStatusSeverityIcon(highest_severity)
+                }
+            });
+
+            return (
+                <>
+                    <PageSection hasBodyWrapper={false}>
+                        <Gallery className='ct-cards-grid' hasGutter>
+                            <CardsPage handleRefresh={this.handleRefresh}
+                                       applySecurity={applySecurity}
+                                       applySelected={applySelected}
+                                       applyKpatches={applyKpatches}
+                                       highestSeverity={highest_severity}
+                                       onValueChanged={this.onValueChanged}
+                                       {...this.state} />
+                        </Gallery>
+                    </PageSection>
+                    { this.state.showRestartServicesDialog &&
+                        <RestartServicesDialog
+                            restartPackages={this.state.restartPackages}
+                            close={() => this.setState({ showRestartServicesDialog: false })}
+                            state={this.state.state}
+                            checkNeedsRestart={this.checkNeedsRestart}
+                            onValueChanged={delta => this.setState(delta)}
+                            loadUpdates={this.loadUpdates} />
+                    }
+                    { this.state.showRebootSystemDialog &&
+                        <ShutdownModal onClose={() => this.setState({ showRebootSystemDialog: false })} />
+                    }
+                </>
+            );
+        }
+
+        case "loadError":
+        case "updateError":
+            page_status.set_own({
+                type: "error",
+                title: STATE_HEADINGS[this.state.state],
+            });
+            return (
+                <Stack>
+                    <EmptyStatePanel title={ STATE_HEADINGS[this.state.state] }
+                                    icon={ ExclamationCircleIcon }
+                                    paragraph={
+                                        <Content component={ContentVariants.p}>
+                                            {_("Please resolve the issue and reload this page.")}
+                                        </Content>
+                                    }
+                    />
+                    <CodeBlock className='pf-v6-u-mx-auto error-log'>
+                        <CodeBlockCode>
+                            {this.state.errorMessages
+                                    .filter((m, index) => index === 0 || m !== this.state.errorMessages[index - 1])
+                                    .map(m => <span key={m}>{m}</span>)}
+                        </CodeBlockCode>
+                    </CodeBlock>
+                </Stack>
+            );
+
+        case "applying":
+            page_status.set_own(null);
+            return <ApplyUpdates transactionProps={this.state.applyTransactionProps}
+                                 actions={this.state.applyActions}
+                                 rebootAfter={this.state.rebootAfterSuccess}
+                                 setRebootAfter={ (_event, enabled) => this.setState({ rebootAfterSuccess: enabled }) }
+            />;
+
+        case "updateSuccess": {
+            if (this.state.rebootAfterSuccess) {
+                this.setState({ state: "restart" });
+                cockpit.spawn(["shutdown", "--reboot", "now"], { superuser: "require" });
+                return null;
+            }
+
+            let warningTitle;
+            if (!this.state.checkRestartAvailable) {
+                warningTitle = _("Reboot recommended");
+            } else {
+                if (this.state.restartPackages.reboot.length > 0)
+                    warningTitle = cockpit.ngettext("A package needs a system reboot for the updates to take effect:",
+                                                    "Some packages need a system reboot for the updates to take effect:",
+                                                    this.state.restartPackages.reboot.length);
+                else if (this.state.restartPackages.daemons.length > 0)
+                    warningTitle = cockpit.ngettext("A service needs to be restarted for the updates to take effect:",
+                                                    "Some services need to be restarted for the updates to take effect:",
+                                                    this.state.restartPackages.daemons.length);
+                else if (this.state.restartPackages.manual.length > 0)
+                    warningTitle = _("Some software needs to be restarted manually");
+            }
+
+            if (warningTitle) {
+                page_status.set_own({
+                    type: "warning",
+                    title: warningTitle
+                });
+            }
+
+            return (
+                <>
+                    <UpdateSuccess onIgnore={this.loadUpdates}
+                        openServiceRestartDialog={() => this.setState({ showRestartServicesDialog: true })}
+                        openRebootDialog={() => this.setState({ showRebootSystemDialog: true })}
+                        restart={this.state.restartPackages.daemons}
+                        manual={this.state.restartPackages.manual}
+                        reboot={this.state.restartPackages.reboot}
+                        checkRestartAvailable={this.state.checkRestartAvailable}
+                        history={this.state.history} />
+                    { this.state.showRebootSystemDialog &&
+                        <ShutdownModal onClose={() => this.setState({ showRebootSystemDialog: false })} />
+                    }
+                    { this.state.showRestartServicesDialog &&
+                        <RestartServicesDialog restartPackages={this.state.restartPackages}
+                            close={() => this.setState({ showRestartServicesDialog: false })}
+                            state={this.state.state}
+                            checkNeedsRestart={this.checkNeedsRestart}
+                            onValueChanged={delta => this.setState(delta)}
+                            loadUpdates={this.loadUpdates} />
+                    }
+                </>
+            );
+        }
+
+        case "restart":
+            page_status.set_own(null);
+            return <EmptyStatePanel loading title={ _("Restarting") }
+                                    headingLevel="h5"
+                                    paragraph={ _("Your server will close the connection soon. You can reconnect after it has restarted.") }
+            />;
+
+        case "uptodate":
+        {
+            page_status.set_own({
+                title: STATE_HEADINGS[this.state.state],
+                details: {
+                    link: false,
+                    pficon: "check",
+                }
+            });
+
+            return (
+                <PageSection hasBodyWrapper={false}>
+                    <Gallery className='ct-cards-grid' hasGutter>
+                        <CardsPage onValueChanged={this.onValueChanged} handleRefresh={this.handleRefresh} {...this.state} />
+                    </Gallery>
+                    { this.state.showRestartServicesDialog &&
+                    <RestartServicesDialog restartPackages={this.state.restartPackages}
+                                     close={() => this.setState({ showRestartServicesDialog: false })}
+                                     state={this.state.state}
+                                     checkNeedsRestart={this.checkNeedsRestart}
+                                     onValueChanged={delta => this.setState(delta)}
+                                     loadUpdates={this.loadUpdates} />
+                    }
+                    { this.state.showRebootSystemDialog &&
+                    <ShutdownModal onClose={() => this.setState({ showRebootSystemDialog: false })} />
+                    }
+                </PageSection>
+            );
+        }
+
+        default:
+            page_status.set_own(null);
+            return null;
+        }
+    }
+
+    handleRefresh() {
+        this.setState({ state: "refreshing", loadPercent: null });
+        this.state.packageManager.refresh(true, data => this.setState({ loadPercent: data.percentage }))
+                .then(() => {
+                    if (this._mounted === false)
+                        return;
+
+                    this.setState({ timeSinceRefresh: 0 });
+                    this.loadUpdates();
+                })
+                .catch(this.handleLoadError);
+    }
+
+    render() {
+        let content = this.renderContent();
+        if (!["available", "uptodate"].includes(this.state.state))
+            content = <PageSection hasBodyWrapper={false}>{content}</PageSection>;
+
+        return (
+            <WithDialogs>
+                <Page className="pf-m-no-sidebar">
+                    {content}
+                </Page>
+            </WithDialogs>
+        );
+    }
+}
+
+document.addEventListener("DOMContentLoaded", async () => {
+    init();
+
+    try {
+        await cockpit.init();
+    } catch (exp) {
+        /* Remove this when every beiboot scenario has Cockpit 336 */
+        if (exp.problem === 'not-supported') {
+            const os_release = await read_os_release();
+            cockpit.info.os_release = os_release;
+        }
+    }
+
+    const root = createRoot(document.getElementById('app'));
+    root.render(
+        <SelectedStore>
+            <OsUpdates />
+        </SelectedStore>
+    );
+});

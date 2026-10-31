@@ -1,0 +1,27 @@
+{
+    "name": "updates",
+    "priority": 0,
+    "conditions": [
+        {"path-exists": "/lib/systemd/system/packagekit.service"},
+        {"path-not-exists": "/sysroot/ostree"}
+    ],
+
+    "tools": {
+        "index": {
+            "label": "Software updates",
+            "docs": [
+                {
+                    "label": "Applying live kernel patching",
+		    "url": "https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/managing_monitoring_and_updating_the_kernel/applying-patches-with-kernel-live-patching_assembly_managing-kernel-command-line-parameters-with-uki#proc_applying-patches-witch-kernel-live-patching-in-the-web-console_applying-patches-with-kernel-live-patching"
+                }
+            ],
+            "keywords": [
+                {
+                    "matches": ["package", "packagekit", "dnf", "yum", "apt-get", "security", "kpatch", "updates"]
+                }
+            ]
+        }
+    },
+
+    "preload": [ "index" ]
+}

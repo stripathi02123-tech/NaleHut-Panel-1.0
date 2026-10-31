@@ -1,0 +1,146 @@
+/*
+ * Copyright (C) 2024 Red Hat, Inc.
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ */
+
+import cockpit from "cockpit";
+
+import React, { useState } from "react";
+
+import { Checkbox } from "@patternfly/react-core/dist/esm/components/Checkbox/index.js";
+import { MultiTypeaheadSelect, MultiTypeaheadSelectOption } from "cockpit-components-multi-typeahead-select";
+
+const MultiTypeahead = ({ options } : { options: MultiTypeaheadSelectOption[] }) => {
+    const [notFoundIsString, setNotFoundIsString] = useState(false);
+    const [selected, setSelected] = useState<(string | number)[]>([]);
+    const [toggles, setToggles] = useState(0);
+    const [changes, setChanges] = useState(0);
+
+    function add(val: string | number) {
+        setSelected(selected.concat([val]));
+    }
+
+    function rem(val: string | number) {
+        setSelected(selected.filter(v => v !== val));
+    }
+
+    return (
+        <div>
+            <MultiTypeaheadSelect
+                id='multi-typeahead-widget'
+                placeholder="Select flavors"
+                isScrollable
+                noOptionsFoundMessage={notFoundIsString ? "Not found" : val => cockpit.format("'$0' not found", val) }
+                options={options}
+                selected={selected}
+                onAdd={add}
+                onRemove={rem}
+                onToggle={() => setToggles(val => val + 1)}
+                onInputChange={() => setChanges(val => val + 1)}
+            />
+            <div>Selected: <span id="multi-value">{JSON.stringify(selected)}</span></div>
+            <div>Toggles: <span id="multi-toggles">{toggles}</span></div>
+            <div>Changes: <span id="multi-changes">{changes}</span></div>
+            <Checkbox
+                id="notFoundIsStringMulti"
+                label="notFoundIsString"
+                isChecked={notFoundIsString}
+                onChange={(_event, checked) => setNotFoundIsString(checked)}
+            />
+        </div>
+    );
+};
+
+export const MultiTypeaheadDemo = () => {
+    const flavors: string[] = [
+        "Alumni Swirl",
+        "Apple Cobbler Crunch",
+        "Arboretum Breeze",
+        "August Pie",
+        "Autumn Delight",
+        "Bavarian Raspberry Crunch",
+        "Berkey Brickle",
+        "Birthday Bash",
+        "Bittersweet Mint",
+        "Black Cow",
+        "Black Raspberry",
+        "Blueberry Cheesecake",
+        "Butter Pecan",
+        "Candy Bar/Snickers",
+        "Caramel Critters",
+        "Centennial Vanilla Bean",
+        "Cherry Cheesecake",
+        "Cherry Chip",
+        "Cherry Quist",
+        "Cherry Sherbet",
+        "Chocolate",
+        "Chocolate Cherry Cordia",
+        "Chocolate Chip",
+        "Chocolate Chip Cheesecake",
+        "Chocolate Chip Cookie Dough",
+        "Chocolate Chocolate Nut",
+        "Chocolate Marble",
+        "Chocolate Marshmallow",
+        "Chocolate Pretzel Crunch",
+        "Chunky Chocolate",
+        "Chunky Chocolate- Vanilla",
+        "Coconut Chip",
+        "Coffee Mocha Fudge",
+        "Coffee w/Cream and Sugar",
+        "Crazy Charlie Sundae Swirl",
+        "Death By Chocolate",
+        "Egg Nog",
+        "Espresso Fudge Pie",
+        "German Chocolate Cake",
+        "Golden Chocolate Pecan",
+        "Goo Goo Cluster",
+        "Grape Sherbet",
+        "Happy Happy Joy Joy",
+        "Heath Bar Candy",
+        "Just Fudge",
+        "Kenney Beany Chocolate",
+        "Lion Tracks",
+        "LionS'more",
+        "Mallo Cup",
+        "Maple Nut",
+        "Mint Nittany",
+        "Monster Mash",
+        "Orange Vanilla Sundae",
+        "Palmer Mousseum With Almonds",
+        "Peachy Paterno",
+        "Peanut Butter Cup",
+        "Peanut Butter Fudge Cluster",
+        "Peanut Butter Marshmallow",
+        "Peanut Butter Swirl",
+        "Pecan Apple Danish",
+        "Peppermint Stick",
+        "Pistachio",
+        "Pralines N Cream",
+        "Pumpkin Pie",
+        "Raspberry Fudge Torte",
+        "Raspberry Parfait",
+        "Rum Raisin",
+        "Russ 'Digs' Roseberry",
+        "Santa Fe Banana",
+        "Scholar's Chip",
+        "Sea Salt Chocolate Caramel",
+        "Somerset Shortcake",
+        "Southern Chocolate Pie",
+        "Southern Pecan Cheesecake",
+        "Strawberry",
+        "Strawberry Cheesecake",
+        "Teaberry",
+        "Tin Roof Sundae",
+        "Toasted Almond",
+        "Toasted Almond Fudge",
+        "Turtle Creek",
+        "Vanilla",
+        "White House",
+        "Wicked Caramel Sundae",
+        "WPSU Coffee Break",
+    ];
+
+    const options: MultiTypeaheadSelectOption[] = flavors.map((f, i) => ({ value: i + 1, content: f }));
+
+    return <MultiTypeahead options={options} />;
+};
