@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>XMLHttpRequest proxy</title>
+    <meta charset="utf-8">
+    <script src="../base1/cockpit.js"></script>
+</head>
+<body>
+    <main tabindex="-1">
+        <section>
+            <div>
+                <div>
+                    <label for="address">URL</label>
+                    <input id="address" value="http://localhost:12345">
+                    <button id="get">GET request</button>
+                </div>
+                <div>
+                    <label for="result">Code</label>
+                    <span id="result"></span>
+                </div>
+                <div>
+                    <label for="output">Output</label>
+                    <pre id="output"></pre>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <script src="xhrproxy.js"></script>
+</body>
+</html>

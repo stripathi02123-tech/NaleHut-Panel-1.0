@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Launch and reattach to long-running process</title>
+    <meta charset="utf-8">
+    <link href="long-running.css" type="text/css" rel="stylesheet">
+    <script src="../base1/cockpit.js"></script>
+    <script type="module" src="long-running-process.js"></script>
+    <script type="module" src="index.js"></script>
+</head>
+
+<body>
+    <main tabindex="-1">
+        <section>
+            <div>
+                <div>
+                    <label for="state">State:</label>
+                    <span id="state"></span></p>
+                </div>
+
+                <div>
+                    <input id="command" type="text" placeholder="command" />
+                    <input id="sysrun-args" type="text" placeholder="systemd-run arguments"/>
+                    <button id="run" disabled>Start</button>
+                </div>
+
+                <pre id="output"></pre>
+            </div>
+        </section>
+    </main>
+</body>
+</html>

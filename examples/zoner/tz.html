@@ -1,0 +1,55 @@
+<head>
+    <title>Time Zone</title>
+    <meta charset="utf-8">
+    <script src="../base1/cockpit.js"></script>
+</head>
+<body>
+    <main tabindex="-1">
+        <section>
+            <div>
+                <div>
+                    <label for="current">Time Zone</label>
+                    <span id="current"></span>
+                </div>
+
+                <div>
+                    <label class="control-label" for="new">New Zone</label>
+                    <input class="form-control" id="new" value="UTC">
+                    <button id="change">Change</button>
+                </div>
+
+                <div>
+                    <span id="failure"></span>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        const input = document.getElementById("new");
+        const current = document.getElementById("current");
+        const failure = document.getElementById("failure");
+
+        document.getElementById("change").addEventListener("click", change_zone);
+
+        const service = cockpit.dbus('org.freedesktop.timedate1');
+        const timedate = service.proxy();
+        timedate.addEventListener("changed", display_zone);
+
+        function display_zone() {
+            current.textContent = timedate.Timezone;
+        }
+
+        function change_zone() {
+            timedate.SetTimezone(input.value, true)
+                    .catch(change_fail);
+            failure.textContent = "";
+        }
+
+        function change_fail(err) {
+            failure.textContent = err.message;
+        }
+
+    </script>
+</body>
+</html>

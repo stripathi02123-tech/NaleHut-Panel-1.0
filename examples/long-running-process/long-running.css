@@ -1,0 +1,10 @@
+pre {
+    background-color: #EEE;
+    min-block-size: 5em;
+    max-block-size: 50em;
+    overflow-y: scroll;
+}
+
+#command {
+    min-inline-size: 50ex;
+}
