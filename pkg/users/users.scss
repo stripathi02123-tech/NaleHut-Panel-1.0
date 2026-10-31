@@ -1,0 +1,129 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
+@use "ct-card";
+@use "page";
+
+// Import utilities for `pf-u...` classes
+@use "@patternfly/patternfly/utilities/Spacing/spacing.css";
+@use "global-variables.scss";
+
+#account .pf-v6-c-card {
+  @extend .ct-card;
+}
+
+.account-details .pf-v6-c-card__header {
+  margin-block-end: var(--pf-t--global--spacer--lg)
+}
+
+#account .pf-v6-l-gallery {
+  --pf-v6-l-gallery--GridTemplateColumns: 1fr;
+}
+
+.delete-resource-red {
+  color: var(--pf-t--global--icon--color--status--danger--default);
+}
+
+#account-details div.checkbox:first-child {
+  margin-block-start: 0;
+}
+
+#account-details div.checkbox:last-child {
+  margin-block-end: 0;
+}
+
+.size-text-ct {
+  display: inline;
+  inline-size: 8em;
+  text-align: start;
+  margin: 2px;
+}
+
+.account-column-one {
+  min-inline-size: 280px;
+  display: inline-block;
+}
+
+.expiration-modal .pf-v6-c-form__group-control {
+  .pf-v6-c-radio:first-child {
+    padding-block-end: var(--pf-t--global--spacer--sm);
+  }
+  // Work around for https://github.com/patternfly/patternfly/issues/4061
+  .pf-v6-c-radio:nth-child(2) input {
+    align-self: center;
+  }
+}
+
+.help-block {
+  white-space: pre-wrap;
+}
+
+.accounts-toolbar-header > .pf-v6-c-toolbar__content-section {
+  row-gap: var(--pf-t--global--spacer--sm);
+}
+
+.dot {
+  block-size: 20px;
+  inline-size: 20px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+// Iterate through supported PF color names for light and dark modes
+@each $color in blue yellow {
+  .group-#{"" + $color} {
+    background-color: var(--pf-t--color--#{$color}--30);
+
+    .pf-v6-theme-dark & {
+      background-color: var(--pf-t--color--#{$color}--40);
+    }
+  }
+}
+
+.group-blue {
+  background-color: var(--pf-t--global--color--nonstatus--blue--default);
+}
+
+.group-yellow {
+  background-color: var(--pf-t--global--color--nonstatus--yellow--default);
+}
+
+.group-grey {
+  background-color: var(--pf-t--global--color--nonstatus--gray--default);
+}
+
+.group-more-btn {
+  font-size: var(--pf-t--global--font--size--body--default);
+}
+
+#groups-list td:first-child {
+  vertical-align: middle;
+}
+
+// Create new group and Create new account are
+// different characters and different lengths
+// This makes buttons the same size.
+#groups-create, #accounts-create {
+  min-inline-size: 11rem;
+}
+
+// We cannot use the PF helper pf-v6-u-ml-lg here, as it doesn't support RTL yet
+#current-account-badge {
+  margin-inline-start: var(--pf-t--global--spacer--lg);
+}
+
+// Pretty sure paths are LTR, even in an RTL display
+output {
+  direction: ltr;
+}
+
+/* Adjust the vertical alignment in the expandable card */
+.card-groups {
+  .pf-v6-c-card__header-toggle {
+    /* Remove the margin completely so it aligns the toggle with the h2 */
+    margin-block: 0;
+  }
+
+  .pf-v6-c-content--h2 {
+    /* Heading inside of the card brings in extra margin, which causes an offset, so we should remove it */
+    margin: 0;
+  }
+}

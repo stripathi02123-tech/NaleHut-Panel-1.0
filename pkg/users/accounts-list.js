@@ -1,0 +1,458 @@
+/*
+ * Copyright (C) 2020 Red Hat, Inc.
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ */
+
+import cockpit from 'cockpit';
+import React from 'react';
+import { superuser } from "superuser";
+
+import { admins } from './users.js';
+import { Button } from "@patternfly/react-core/dist/esm/components/Button/index.js";
+import { Badge } from "@patternfly/react-core/dist/esm/components/Badge/index.js";
+import { Card, CardExpandableContent, CardHeader, CardTitle } from '@patternfly/react-core/dist/esm/components/Card/index.js';
+import { Divider } from '@patternfly/react-core/dist/esm/components/Divider/index.js';
+import { DropdownItem } from '@patternfly/react-core/dist/esm/components/Dropdown/index.js';
+import { Flex, FlexItem } from "@patternfly/react-core/dist/esm/layouts/Flex/index.js";
+import { HelperText, HelperTextItem } from "@patternfly/react-core/dist/esm/components/HelperText/index.js";
+import { Label } from "@patternfly/react-core/dist/esm/components/Label/index.js";
+import { Page, PageSection } from "@patternfly/react-core/dist/esm/components/Page/index.js";
+import { SearchInput } from "@patternfly/react-core/dist/esm/components/SearchInput/index.js";
+import { Stack } from "@patternfly/react-core/dist/esm/layouts/Stack/index.js";
+import { Content, ContentVariants } from "@patternfly/react-core/dist/esm/components/Content/index.js";
+import { Toolbar, ToolbarContent, ToolbarItem } from "@patternfly/react-core/dist/esm/components/Toolbar/index.js";
+import * as timeformat from "timeformat";
+import { EmptyStatePanel } from 'cockpit-components-empty-state.jsx';
+import { ListingTable } from 'cockpit-components-table.jsx';
+import { SearchIcon } from '@patternfly/react-icons';
+import { SortByDirection } from "@patternfly/react-table";
+import { account_create_dialog } from "./account-create-dialog.js";
+import { delete_account_dialog } from "./delete-account-dialog.js";
+import { group_create_dialog } from "./group-create-dialog.js";
+import { lockAccountDialog } from "./lock-account-dialog.js";
+import { logoutAccountDialog } from "./logout-account-dialog.js";
+import { GroupActions } from "./group-actions.jsx";
+
+import { usePageLocation } from "hooks";
+import { KebabDropdown } from "cockpit-components-dropdown";
+
+const _ = cockpit.gettext;
+
+const UserActions = ({ account, current }) => {
+    const actions = [
+        <DropdownItem key="edit-user"
+                      onClick={ev => { ev.preventDefault(); cockpit.location.go(account.name) }}>
+            {_("Edit user")}
+        </DropdownItem>,
+    ];
+
+    superuser.allowed && actions.push(
+        <Divider key="separator-0" />,
+        <DropdownItem key="log-user-out"
+                      isDisabled={account.uid === 0 || !account.loggedIn || current }
+                      onClick={() => logoutAccountDialog(account) }>
+            {_("Log user out")}
+        </DropdownItem>,
+        <Divider key="separator-1" />,
+        <DropdownItem key="lock-account"
+                      isDisabled={account.isLocked}
+                      onClick={() => lockAccountDialog(account) }>
+            {_("Lock account")}
+        </DropdownItem>,
+        <DropdownItem key="delete-account"
+                      isDisabled={account.uid === 0 || current}
+                      className={account.uid === 0 || current ? "" : "delete-resource-red"}
+                      onClick={() => delete_account_dialog(account) }>
+            {_("Delete account")}
+        </DropdownItem>,
+    );
+
+    return <KebabDropdown toggleButtonId="accounts-actions" dropdownItems={actions} />;
+};
+
+const getGroupRow = (group, accounts) => {
+    let groupColorClass;
+    if (group.isAdmin)
+        groupColorClass = "group-yellow";
+    else if (group.members > 0)
+        groupColorClass = "group-blue";
+    else
+        groupColorClass = "group-grey";
+
+    const columns = [
+        {
+            sortKey: group.name,
+            title: (
+                <Flex alignItems={{ default: 'alignItemsCenter' }}>
+                    <div className={"dot " + groupColorClass} />
+                    <FlexItem>{group.name}</FlexItem>
+                </Flex>
+            ),
+            props: { width: 20, },
+        },
+        {
+            title: group.gid,
+            props: { width: 10, },
+        },
+        {
+            title: group.members,
+            props: { width: 20, },
+        },
+        {
+            title: (
+                <Content>
+                    <Content component={ContentVariants.p}>
+                        {(group.userlistPrimary.concat(group.userlist))
+                                .map(account => {
+                                    if (accounts.map(account => account.name).includes(account))
+                                        return <Content key={account} component={ContentVariants.a} href={"#" + account}>{account}</Content>;
+                                    else
+                                        return account;
+                                })
+                                .reduce((acc, curr) => [...acc, ", ", curr], [])
+                                .slice(1)}
+                    </Content>
+                </Content>
+            ),
+            props: { width: 50, },
+        },
+    ];
+
+    if (superuser.allowed) {
+        columns.push(
+            {
+                title: <GroupActions group={group} />,
+                props: { className: "pf-v6-c-table__action" }
+            }
+        );
+    }
+
+    return { columns, props: { "data-row-id": group.name, key: group.name } };
+};
+
+const getAccountRow = (account, current, groups) => {
+    const userGroups = groups.filter(group => group.gid === account.gid || group.userlist.find(accountName => accountName === account.name));
+    const userGroupLabels = userGroups.map(group => {
+        const color = group.isAdmin ? "yellow" : "blue";
+        return (
+            <Label key={group.name} variant="filled" color={color}>
+                {!group.isAdmin ? group.name : ("admin" + " (" + group.name + ")") }
+            </Label>
+        );
+    });
+
+    let loginText = "";
+    let loginSortKey = null;
+    if (account.loggedIn) {
+        loginText = _("Logged in");
+        loginSortKey = "logged in";
+    } else if (!account.lastLogin) {
+        loginText = _("Never logged in");
+        loginSortKey = "never";
+    } else {
+        loginSortKey = new Date(account.lastLogin);
+        loginText = timeformat.dateTime(loginSortKey);
+    }
+
+    const columns = [
+        {
+            title: (
+                <span>
+                    <a href={"#/" + account.name}>{account.name}</a>
+                    {current && <Badge id="current-account-badge">{_("Your account")}</Badge>}
+                </span>
+            ),
+            sortKey: account.name,
+            props: { width: 25, },
+        },
+        {
+            title: account.gecos.split(',')[0],
+            props: { width: 20, },
+        },
+        {
+            title: account.uid,
+            props: { width: 10, },
+        },
+        {
+            title: loginText,
+            sortKey: loginSortKey,
+            props: { width: 25, },
+        },
+        {
+            title: (
+                <Flex spaceItems={{ default: 'spaceItemsSm' }}>
+                    {userGroupLabels}
+                </Flex>
+            ),
+            props: { width: 20 },
+        },
+        {
+            title: <UserActions account={account} current={current} />,
+            props: { className: "pf-v6-c-table__action" }
+        },
+    ];
+
+    return { columns, props: { "data-row-id": account.name, key: account.name } };
+};
+
+const mapGroupsToAccount = (accounts, groups) => {
+    return accounts.map(account => {
+        const accountGroups = [];
+        groups.forEach(group => {
+            if (group.userlist.find(accountName => accountName === account.name))
+                accountGroups.push(group.name);
+        });
+        account.groups = accountGroups;
+
+        return account;
+    });
+};
+
+const GroupsList = ({ groups, accounts, isExpanded, setIsExpanded, min_gid, max_gid }) => {
+    const { options } = usePageLocation();
+
+    const currentTextFilter = typeof options.group == "string" ? options.group : '';
+    const setCurrentTextFilter = val => {
+        const newOptions = { ...cockpit.location.options };
+        if (val)
+            newOptions.group = val;
+        else
+            delete newOptions.group;
+        cockpit.location.replace(cockpit.location.path, newOptions);
+    };
+
+    const filtered_groups = groups.filter(group => {
+        if (currentTextFilter !== "" &&
+            (group.name.toLowerCase().indexOf(currentTextFilter.toLowerCase()) === -1) &&
+            (group.gid.toString().indexOf(currentTextFilter.toLowerCase()) === -1))
+            return false;
+
+        return true;
+    });
+
+    const columns = [
+        { title: _("Group name"), sortable: true },
+        { title: _("ID"), sortable: true },
+        { title: _("# of users"), sortable: true },
+        { title: _("Accounts") },
+    ];
+
+    const sortRows = (rows, direction, idx) => {
+        // GID and members columns are numeric
+        const isNumeric = idx === 1 || idx === 2;
+        const sortedRows = rows.sort((a, b) => {
+            const aitem = a.columns[idx].sortKey || a.columns[idx].title;
+            const bitem = b.columns[idx].sortKey || b.columns[idx].title;
+            const aname = a.columns[0].sortKey;
+            const bname = b.columns[0].sortKey;
+
+            // administrator groups are always first
+            if (admins.includes(aname))
+                return direction === SortByDirection.asc ? -1 : 1;
+            if (admins.includes(bname))
+                return direction === SortByDirection.asc ? 1 : -1;
+
+            if (isNumeric)
+                return bitem - aitem;
+            else
+                return aitem.localeCompare(bitem);
+        });
+        return direction === SortByDirection.asc ? sortedRows : sortedRows.reverse();
+    };
+
+    const tableToolbar = (
+        <Toolbar>
+            <ToolbarContent className="groups-toolbar-header">
+                {isExpanded && <ToolbarItem>
+                    <SearchInput id="groups-filter"
+                                 placeholder={_("Search for name or ID")}
+                                 value={currentTextFilter}
+                                 onChange={(_, val) => setCurrentTextFilter(val)}
+                                 onClear={() => setCurrentTextFilter('')} />
+                </ToolbarItem>}
+                { superuser.allowed &&
+                    <>
+                        {isExpanded && <ToolbarItem variant="separator" />}
+                        <ToolbarItem align={{ md: "alignEnd" }}>
+                            <Button variant="secondary" id="groups-create" onClick={() => group_create_dialog(groups, setIsExpanded, min_gid, max_gid)}>
+                                {_("Create new group")}
+                            </Button>
+                        </ToolbarItem>
+                    </>
+                }
+            </ToolbarContent>
+        </Toolbar>
+    );
+
+    return (
+        <Card className="ct-card card-groups" isExpanded={isExpanded}>
+            <CardHeader actions={{ actions: tableToolbar, hasNoOffset: true }}
+                className="ct-card-expandable-header"
+                onExpand={() => setIsExpanded(!isExpanded)}
+                toggleButtonProps={{
+                    id: 'groups-view-toggle',
+                    'aria-label': _("Groups"),
+                    'aria-expanded': isExpanded
+                }}>
+                <CardTitle className="pf-v6-l-flex pf-m-align-items-center pf-m-space-items-md">
+                    {_("Groups")}
+                    {(!isExpanded && !groups.length) && <HelperText> <HelperTextItem variant="indeterminate">{_("Loading...")}</HelperTextItem></HelperText>}
+                    {(!isExpanded && filtered_groups.length > 0) && <>
+                        {filtered_groups.slice(0, 3)
+                                .map(group => {
+                                    const color = group.isAdmin ? "yellow" : "blue";
+                                    return (
+                                        <Label key={group.name} variant="filled" color={color}>
+                                            {group.name + ": " + (group.userlistPrimary.length + group.userlist.length)}
+                                        </Label>
+                                    );
+                                })}
+                        {filtered_groups.length > 3 && <Button key="more" className="group-more-btn" isInline variant='link' onClick={() => setIsExpanded(!isExpanded)}>
+                            {cockpit.format(_("$0 more..."), filtered_groups.length - 3)}
+                        </Button>}
+                    </>}
+                </CardTitle>
+            </CardHeader>
+            <CardExpandableContent>
+                <ListingTable columns={columns}
+                    id="groups-list"
+                    rows={ filtered_groups.map(a => getGroupRow(a, accounts)) }
+                    loading={ groups.length && accounts.length ? '' : _("Loading...") }
+                    sortMethod={sortRows}
+                    emptyComponent={<EmptyStatePanel title={_("No matching results")} icon={SearchIcon} action={_("Clear filter")}
+                                                     onAction={() => setCurrentTextFilter('')} actionVariant="link" />}
+                    variant="compact" sortBy={{ index: 2, direction: SortByDirection.asc }} />
+            </CardExpandableContent>
+        </Card>
+    );
+};
+
+const AccountsList = ({ accounts, current_user, groups, min_uid, max_uid, shells }) => {
+    const { options } = usePageLocation();
+
+    const currentTextFilter = typeof options.user == "string" ? options.user : '';
+    const setCurrentTextFilter = val => {
+        const newOptions = { ...cockpit.location.options };
+        if (val)
+            newOptions.user = val;
+        else
+            delete newOptions.user;
+        cockpit.location.replace(cockpit.location.path, newOptions);
+    };
+
+    const filtered_accounts = accounts.filter(account => {
+        if (currentTextFilter !== "" &&
+            (account.name.toLowerCase().indexOf(currentTextFilter.toLowerCase()) === -1) &&
+            (account.gecos.toLowerCase().indexOf(currentTextFilter.toLowerCase()) === -1) &&
+            (account.uid.toString().indexOf(currentTextFilter.toLowerCase()) === -1) &&
+            (!account.groups.find(group => group.toLowerCase().indexOf(currentTextFilter.toLowerCase()) !== -1)))
+            return false;
+
+        return true;
+    });
+
+    const columns = [
+        { title: _("Username"), sortable: true },
+        { title: _("Full name"), sortable: true },
+        { title: _("ID"), sortable: true },
+        { title: _("Last active"), sortable: true },
+        { title: _("Group") },
+        { title: "", sortable: false, props: { screenReaderText: _("Actions") } },
+    ];
+
+    const sortRows = (rows, direction, idx) => {
+        const sortedRows = rows.sort((a, b) => {
+            const aitem = a.columns[idx];
+            const bitem = b.columns[idx];
+            const aname = a.columns[0];
+            const bname = b.columns[0];
+
+            // current user is always first
+            if (aname.sortKey === current_user)
+                return direction === SortByDirection.asc ? -1 : 1;
+            if (bname.sortKey === current_user)
+                return direction === SortByDirection.asc ? 1 : -1;
+            // sorting last login
+            if (idx === 3) {
+                if (aitem.sortKey === "logged in")
+                    return -1;
+                if (bitem.sortKey === "logged in")
+                    return 1;
+                if (aitem.sortKey === "never")
+                    return 1;
+                if (bitem.sortKey === "never")
+                    return -1;
+
+                return bitem.sortKey - aitem.sortKey;
+            }
+
+            if (idx === 2)
+                return bitem.title - aitem.title;
+            return ((typeof aitem == 'string' ? aitem : (aitem.sortKey || aitem.title)).localeCompare(typeof bitem == 'string' ? bitem : (bitem.sortKey || bitem.title)));
+        });
+        return direction === SortByDirection.asc ? sortedRows : sortedRows.reverse();
+    };
+
+    const tableToolbar = (
+        <Toolbar>
+            <ToolbarContent className="accounts-toolbar-header">
+                <ToolbarItem>
+                    <SearchInput id="accounts-filter"
+                                 placeholder={_("Search for name, group or ID")}
+                                 value={currentTextFilter}
+                                 onChange={(_, val) => setCurrentTextFilter(val)}
+                                 onClear={() => setCurrentTextFilter('')} />
+                </ToolbarItem>
+                { superuser.allowed &&
+                    <>
+                        <ToolbarItem variant="separator" />
+                        <ToolbarItem align={{ md: "alignEnd" }}>
+                            <Button id="accounts-create" onClick={() => account_create_dialog(accounts, min_uid, max_uid, shells)}>
+                                {_("Create new account")}
+                            </Button>
+                        </ToolbarItem>
+                    </>
+                }
+            </ToolbarContent>
+        </Toolbar>
+    );
+
+    return (
+        <Card isPlain className="ct-card">
+            <CardHeader actions={{ actions: tableToolbar }}>
+                <CardTitle component="h2">{_("Accounts")}</CardTitle>
+            </CardHeader>
+            <ListingTable columns={columns}
+                          id="accounts-list"
+                          isEmptyStateInTable={currentTextFilter !== "" && filtered_accounts.length !== accounts.length}
+                          rows={ filtered_accounts.map(a => getAccountRow(a, current_user === a.name, groups)) }
+                          loading={ accounts.length ? '' : _("Loading...") }
+                          sortMethod={sortRows}
+                          emptyComponent={<EmptyStatePanel title={_("No matching results")} icon={SearchIcon} action={_("Clear filter")}
+                                                           onAction={() => setCurrentTextFilter('')} actionVariant="link" />}
+                          variant="compact" sortBy={{ index: 0, direction: SortByDirection.asc }} />
+        </Card>
+
+    );
+};
+
+export const AccountsMain = ({ accountsInfo, current_user, groups, isGroupsExpanded, setIsGroupsExpanded, min_gid, max_gid, min_uid, max_uid, shells }) => {
+    const accounts = mapGroupsToAccount(accountsInfo, groups).filter(account => {
+        if ((account.uid < 1000 && account.uid !== 0) ||
+                 account.shell.match(/^(\/usr)?\/sbin\/nologin/) ||
+                 account.shell === '/bin/false')
+            return false;
+        return true;
+    });
+
+    return (
+        <Page id="accounts" className="pf-m-no-sidebar">
+            <PageSection hasBodyWrapper={false}>
+                <Stack hasGutter>
+                    <GroupsList accounts={accounts} groups={groups} isExpanded={isGroupsExpanded} setIsExpanded={setIsGroupsExpanded} min_gid={min_gid} max_gid={max_gid} />
+                    <AccountsList accounts={accounts} current_user={current_user} groups={groups} shells={shells} min_uid={min_uid} max_uid={max_uid} />
+                </Stack>
+            </PageSection>
+        </Page>
+    );
+};

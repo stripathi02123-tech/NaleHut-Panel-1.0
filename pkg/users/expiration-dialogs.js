@@ -1,0 +1,225 @@
+/*
+ * Copyright (C) 2020 Red Hat, Inc.
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ */
+
+import cockpit from 'cockpit';
+import React from 'react';
+import { Flex } from "@patternfly/react-core/dist/esm/layouts/Flex/index.js";
+import { Form, FormGroup } from "@patternfly/react-core/dist/esm/components/Form/index.js";
+import { Radio } from "@patternfly/react-core/dist/esm/components/Radio/index.js";
+import { TextInput } from "@patternfly/react-core/dist/esm/components/TextInput/index.js";
+import { DatePicker } from "@patternfly/react-core/dist/esm/components/DatePicker/index.js";
+
+import { has_errors } from "./dialog-utils.js";
+import { show_modal_dialog, apply_modal_dialog } from "cockpit-components-dialog.jsx";
+import * as timeformat from "timeformat";
+import { FormHelper } from "cockpit-components-form-helper";
+
+const _ = cockpit.gettext;
+
+function AccountExpirationDialogBody({ state, errors, change, validate, update }) {
+    const { mode, before, date } = state;
+
+    return (
+        <Form className="expiration-modal" onSubmit={apply_modal_dialog}>
+            <FormGroup validated={errors?.date ? "error" : "default"}>
+                <Radio id="account-expiration-never" name="mode" value="never"
+                       label={_("Never expire account")}
+                       isChecked={mode === "never"} onChange={() => change("mode", "never")} />
+                <Radio id="account-expiration-expires" name="mode" value="expires"
+                       label={
+                           <Flex>
+                               <span>{before}</span>
+                               <DatePicker aria-label={_("Pick date")}
+                                           buttonAriaLabel={_("Toggle date picker")}
+                                           locale={timeformat.dateFormatLang()}
+                                           weekStart={timeformat.firstDayOfWeek()}
+                                           onChange={(_, str) => change("date", str)}
+                                           onBlur={() => { validate(); update() }}
+                                           invalidFormatText=""
+                                           id="account-expiration-input"
+                                           value={date}
+                                           appendTo={() => document.body}
+                                           isDisabled={mode !== "expires"} />
+                           </Flex>
+                       }
+                       isChecked={mode === "expires"} onChange={() => change("mode", "expires")} />
+                <FormHelper helperTextInvalid={errors?.date} />
+            </FormGroup>
+        </Form>
+    );
+}
+
+export function account_expiration_dialog(account, expire_date) {
+    let dlg = null;
+
+    const parts = _("Expire account on");
+
+    const state = {
+        mode: expire_date ? "expires" : "never",
+        before: parts,
+        date: expire_date?.toISOString().substring(0, 10) ?? ""
+    };
+
+    let errors = { };
+
+    function change(field, value) {
+        state[field] = value;
+        errors = { };
+        update();
+    }
+
+    // Datepicker does not provide information about the validity of the date so we need to do it here
+    // https://github.com/patternfly/patternfly-react/issues/5564
+    function validate() {
+        errors = { };
+
+        if (state.mode === "expires") {
+            if (!state.date)
+                errors.date = _("Please specify an expiration date");
+            else {
+                const date = new Date(state.date + "T12:00:00Z");
+                if (isNaN(date.getTime()) || date.getTime() < 0)
+                    errors.date = _("Invalid expiration date");
+            }
+        }
+
+        return !has_errors(errors);
+    }
+
+    function update() {
+        const props = {
+            id: "account-expiration",
+            title: _("Account expiration"),
+            body: <AccountExpirationDialogBody state={state} errors={errors} change={change} validate={validate} update={update} />
+        };
+
+        const footer = {
+            actions: [
+                {
+                    caption: _("Change"),
+                    style: "primary",
+                    clicked: () => {
+                        if (validate()) {
+                            const prog = ["/usr/sbin/usermod", "-e"];
+                            if (state.mode === "expires") {
+                                const date = new Date(state.date + "T12:00:00Z");
+                                prog.push(date.toISOString().substring(0, 10));
+                            } else
+                                prog.push("");
+                            prog.push(account.name);
+                            return cockpit.spawn(prog, { superuser: "require", err: "message" });
+                        } else {
+                            update();
+                            return Promise.reject();
+                        }
+                    }
+                }
+            ]
+        };
+
+        if (!dlg)
+            dlg = show_modal_dialog(props, footer);
+        else {
+            dlg.setProps(props);
+            dlg.setFooterProps(footer);
+        }
+    }
+
+    update();
+}
+
+function PasswordExpirationDialogBody({ state, errors, change }) {
+    const { mode, before, after, days } = state;
+
+    return (
+        <Form className="expiration-modal" onSubmit={apply_modal_dialog}>
+            <FormGroup>
+                <Radio id="password-expiration-never" name="mode" value="never"
+                       label={_("Never expire password")}
+                       isChecked={mode === "never"} onChange={() => change("mode", "never")} />
+                <Radio id="password-expiration-expires" name="mode" value="expires"
+                       label={<>
+                           <span id="password-expiration-before">{before}</span>
+                           <TextInput className="size-text-ct" id="password-expiration-input"
+                                  validated={(errors?.days) ? "error" : "default"}
+                                  value={days} onChange={(_event, value) => change("days", value)} isDisabled={mode !== "expires"} />
+                           <span id="password-expiration-after">{after}</span>
+                       </>}
+                       isChecked={mode === "expires"} onChange={() => change("mode", "expires")} />
+                <FormHelper helperTextInvalid={errors?.days} />
+            </FormGroup>
+        </Form>
+    );
+}
+
+export function password_expiration_dialog(account, expire_days) {
+    let dlg = null;
+
+    /* TRANSLATORS: This is split up and therefore cannot use ngettext plurals */
+    const parts = _("Require password change every $0 days").split("$0");
+
+    const state = {
+        mode: expire_days ? "expires" : "never",
+        before: parts[0],
+        after: parts[1],
+        days: expire_days || ""
+    };
+
+    let errors = { };
+
+    function change(field, value) {
+        state[field] = value;
+        update();
+    }
+
+    function validate() {
+        errors = { };
+
+        if (state.mode === "expires") {
+            const days = parseInt(state.days);
+            if (isNaN(days) || days < 0)
+                errors.days = _("Invalid number of days");
+        }
+
+        return !has_errors(errors);
+    }
+
+    function update() {
+        const props = {
+            id: "password-expiration",
+            title: _("Password expiration"),
+            body: <PasswordExpirationDialogBody state={state} errors={errors} change={change} />,
+            variant: "small"
+        };
+
+        const footer = {
+            actions: [
+                {
+                    caption: _("Change"),
+                    style: "primary",
+                    clicked: () => {
+                        if (validate()) {
+                            const days = state.mode === "expires" ? parseInt(state.days) : -1;
+                            return cockpit.spawn(["passwd", "-x", String(days), account.name],
+                                                 { superuser: "require", err: "message" });
+                        } else {
+                            update();
+                            return Promise.reject();
+                        }
+                    }
+                }
+            ]
+        };
+
+        if (!dlg)
+            dlg = show_modal_dialog(props, footer);
+        else {
+            dlg.setProps(props);
+            dlg.setFooterProps(footer);
+        }
+    }
+
+    update();
+}
