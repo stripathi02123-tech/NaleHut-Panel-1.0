@@ -1,0 +1,83 @@
+/*
+ * Copyright (C) 2023 Red Hat, Inc.
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ */
+
+import cockpit from "cockpit";
+import React from "react";
+import client from "../client";
+
+import { Button } from "@patternfly/react-core/dist/esm/components/Button/index.js";
+import { CardBody } from "@patternfly/react-core/dist/esm/components/Card/index.js";
+import { DescriptionList } from "@patternfly/react-core/dist/esm/components/DescriptionList/index.js";
+
+import { StorageCard, StorageDescription, new_card, register_crossref } from "../pages.jsx";
+import { std_format_action } from "../block/actions.jsx";
+import { fmt_size } from "../utils.js";
+import { std_lock_action } from "../crypto/actions.jsx";
+
+const _ = cockpit.gettext;
+
+export function make_stratis_blockdev_card(next, backing_block, content_block) {
+    const blockdev = client.blocks_stratis_blockdev[content_block.path];
+    const pool = blockdev && client.stratis_pools[blockdev.Pool];
+    const uuid = client.blocks_stratis_stopped_pool[content_block.path];
+
+    const blockdev_card = new_card({
+        title: _("Stratis block device"),
+        location: {
+            label: pool ? pool.Name : client.stratis_manager.StoppedPools[uuid]?.name?.v || uuid,
+            to: ["pool", pool ? pool.Uuid : uuid],
+        },
+        next,
+        component: StratisBlockdevCard,
+        props: { backing_block, content_block, pool, stopped_pool: uuid },
+        actions: [
+            std_lock_action(backing_block, content_block),
+            std_format_action(backing_block, content_block),
+        ]
+    });
+
+    if (pool || uuid) {
+        let extra;
+        if (blockdev && blockdev.Tier === 0)
+            extra = _("data");
+        else if (blockdev && blockdev.Tier === 1)
+            extra = _("cache");
+        else
+            extra = null;
+
+        register_crossref({
+            key: pool || uuid,
+            card: blockdev_card,
+            actions: [],
+            size: blockdev ? fmt_size(Number(blockdev.TotalPhysicalSize)) : fmt_size(content_block.Size),
+            extra,
+        });
+    }
+
+    return blockdev_card;
+}
+
+export const StratisBlockdevCard = ({ card, backing_block, content_block, pool, stopped_pool }) => {
+    const pool_name = pool ? pool.Name : stopped_pool;
+    const pool_uuid = pool ? pool.Uuid : stopped_pool;
+
+    return (
+        <StorageCard card={card}>
+            <CardBody>
+                <DescriptionList className="pf-m-horizontal-on-sm">
+                    <StorageDescription title={_("Stratis pool")}>
+                        {(pool || stopped_pool)
+                            ? <Button variant="link" isInline role="link"
+                                   onClick={() => cockpit.location.go(["pool", pool_uuid])}>
+                                {pool_name}
+                            </Button>
+                            : "-"
+                        }
+                    </StorageDescription>
+                </DescriptionList>
+            </CardBody>
+        </StorageCard>
+    );
+};

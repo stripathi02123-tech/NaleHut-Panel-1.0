@@ -1,0 +1,9 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
+
+@use "../lib/anaconda/anaconda" as anaconda;
+
+#storage.anaconda {
+  @include anaconda.embedded-page-shell;
+}
+
+@include anaconda.anaconda-body-overflow-hack;

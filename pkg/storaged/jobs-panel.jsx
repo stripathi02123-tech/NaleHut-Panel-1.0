@@ -1,0 +1,218 @@
+/*
+ * Copyright (C) 2017 Red Hat, Inc.
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ */
+
+import cockpit from "cockpit";
+import React from "react";
+
+import { CardBody } from "@patternfly/react-core/dist/esm/components/Card/index.js";
+import { DataList, DataListCell, DataListItem, DataListItemCells, DataListItemRow } from "@patternfly/react-core/dist/esm/components/DataList/index.js";
+import { Spinner } from "@patternfly/react-core/dist/esm/components/Spinner/index.js";
+
+import { StorageButton } from "./storage-controls.jsx";
+import { block_name, mdraid_name, lvol_name, format_delay } from "./utils.js";
+
+const _ = cockpit.gettext;
+
+/* Human readable descriptions of the symbolic "Operation"
+ * property of job objects.  These are from the storaged
+ * documentation at
+ *
+ * https://storaged.org/doc/udisks2-api/latest/gdbus-org.freedesktop.UDisks2.Job.html
+ */
+
+const descriptions = {
+    'ata-smart-selftest': _("SMART self-test of $target"),
+    'drive-eject': _("Ejecting $target"),
+    'encrypted-unlock': _("Unlocking $target"),
+    'encrypted-lock': _("Locking $target"),
+    'encrypted-modify': _("Modifying $target"),
+    'encrypted-resize': _("Resizing $target"),
+    'swapspace-start': _("Starting swapspace $target"),
+    'swapspace-stop': _("Stopping swapspace $target"),
+    'filesystem-mount': _("Mounting $target"),
+    'filesystem-unmount': _("Unmounting $target"),
+    'filesystem-modify': _("Modifying $target"),
+    'filesystem-resize': _("Resizing $target"),
+    'filesystem-check': _("Checking $target"),
+    'filesystem-repair': _("Repairing $target"),
+    'format-erase': _("Erasing $target"),
+    'format-mkfs': _("Creating filesystem on $target"),
+    'loop-setup': _("Setting up loop device $target"),
+    'partition-modify': _("Modifying $target"),
+    'partition-delete': _("Deleting $target"),
+    'partition-create': _("Creating partition $target"),
+    cleanup: _("Cleaning up for $target"),
+    'ata-secure-erase': _("Securely erasing $target"),
+    'ata-enhanced-secure-erase': _("Very securely erasing $target"),
+    'md-raid-stop': _("Stopping MDRAID device $target"),
+    'md-raid-start': _("Starting MDRAID device $target"),
+    'md-raid-fault-device': _("Marking $target as faulty"),
+    'md-raid-remove-device': _("Removing $target from MDRAID device"),
+    'md-raid-create': _("Creating MDRAID device $target"),
+    'mdraid-check-job': _("Checking MDRAID device $target"),
+    'mdraid-repair-job': _("Checking and repairing MDRAID device $target"),
+    'mdraid-recover-job': _("Recovering MDRAID device $target"),
+    'mdraid-sync-job': _("Synchronizing MDRAID device $target"),
+    'lvm-lvol-delete': _("Deleting $target"),
+    'lvm-lvol-activate': _("Activating $target"),
+    'lvm-lvol-deactivate': _("Deactivating $target"),
+    'lvm-lvol-snapshot': _("Creating snapshot of $target"),
+    'lvm-vg-create': _("Creating LVM2 volume group $target"),
+    'lvm-vg-delete': _("Deleting LVM2 volume group $target"),
+    'lvm-vg-add-device': _("Adding physical volume to $target"),
+    'lvm-vg-rem-device': _("Removing physical volume from $target"),
+    'lvm-vg-empty-device': _("Emptying $target"),
+    'lvm-vg-create-volume': _("Creating logical volume $target"),
+    'lvm-vg-rename': _("Renaming $target"),
+    'lvm-vg-resize': _("Resizing $target")
+};
+
+function make_description(client, job) {
+    let fmt = descriptions[job.Operation];
+    if (!fmt)
+        fmt = _("Operation '$operation' on $target");
+
+    const target = job.Objects.map(function (path) {
+        if (client.blocks[path])
+            return block_name(client.blocks[client.blocks[path].CryptoBackingDevice] || client.blocks[path]);
+        else if (client.mdraids[path])
+            return mdraid_name(client.mdraids[path]);
+        else if (client.vgroups[path])
+            return client.vgroups[path].Name;
+        else if (client.lvols[path])
+            return lvol_name(client.lvols[path]);
+        else
+            return _("unknown target");
+    }).join(", ");
+
+    return cockpit.format(fmt, { operation: job.Operation, target });
+}
+
+class JobRow extends React.Component {
+    render() {
+        const job = this.props.job;
+
+        function cancel() {
+            return job.Cancel({});
+        }
+
+        let remaining = null;
+        if (job.ExpectedEndTime > 0) {
+            const d = job.ExpectedEndTime / 1000 - this.props.now;
+            if (d > 0)
+                remaining = format_delay(d);
+        }
+
+        return (
+            <DataListItem>
+                <DataListItemRow>
+                    <DataListItemCells
+                        dataListCells={[
+                            <DataListCell key="spinner" isFilled={false}>
+                                <Spinner size="lg" />
+                            </DataListCell>,
+                            <DataListCell key="desc" className="job-description" isFilled={false}>
+                                {make_description(this.props.client, job)}
+                            </DataListCell>,
+                            <DataListCell key="progress" isFilled={false}>
+                                {job.ProgressValid && (job.Progress * 100).toFixed() + "%"}
+                            </DataListCell>,
+                            <DataListCell key="remaining" isFilled={false}>
+                                {remaining}
+                            </DataListCell>,
+                            <DataListCell key="job-action" isFilled={false} alignRight>
+                                { job.Cancelable ? <StorageButton onClick={cancel}>{_("Cancel")}</StorageButton> : null }
+                            </DataListCell>,
+                        ]}
+                    />
+                </DataListItemRow>
+            </DataListItem>
+        );
+    }
+}
+
+export class JobsPanel extends React.Component {
+    constructor() {
+        super();
+        this.reminder = null;
+    }
+
+    componentWillUnmount() {
+        if (this.reminder) {
+            window.clearTimeout(this.reminder);
+            this.reminder = null;
+        }
+    }
+
+    render() {
+        const client = this.props.client;
+        const path_jobs = client.path_jobs[this.props.path] || [];
+        const server_now = new Date().getTime() + client.time_offset;
+
+        function cmp_job(job_a, job_b) {
+            return job_a.StartTime - job_b.StartTime;
+        }
+
+        function job_is_stable(job) {
+            const age_ms = server_now - job.StartTime / 1000;
+            if (age_ms >= 2000)
+                return true;
+
+            if (job.ExpectedEndTime > 0 && (job.ExpectedEndTime / 1000 - server_now) >= 2000)
+                return true;
+
+            return false;
+        }
+
+        let jobs = [];
+        let have_reminder = false;
+        for (const j of path_jobs) {
+            if (job_is_stable(j)) {
+                jobs.push(j);
+            } else if (!have_reminder) {
+                // If there is a unstable job, we have to check again in a bit since being
+                // stable or not depends on the current time.
+                if (this.reminder)
+                    window.clearTimeout(this.reminder);
+                this.reminder = window.setTimeout(() => { this.setState({}) }, 1000);
+                have_reminder = true;
+            }
+        }
+
+        if (jobs.length === 0)
+            return null;
+
+        jobs = jobs.sort(cmp_job);
+
+        return (
+            <CardBody className="contains-list">
+                <DataList isCompact aria-label={_("Jobs")}>
+                    { jobs.map(j => <JobRow key={j.path} client={client} job={j} now={server_now} />) }
+                </DataList>
+            </CardBody>
+        );
+    }
+}
+
+export function job_progress_wrapper(client, path1, path2) {
+    return function (vals, progress_callback, action_function) {
+        function client_changed() {
+            const jobs = client.path_jobs[path1] || client.path_jobs[path2];
+            if (jobs && jobs.length > 0) {
+                const job = jobs[0];
+                let desc = make_description(client, job);
+                if (job.ProgressValid)
+                    desc += cockpit.format(" ($0%)", (job.Progress * 100).toFixed());
+                progress_callback(desc, job.Cancelable ? () => job.Cancel({}) : null);
+            } else {
+                progress_callback(null, null);
+            }
+        }
+
+        client.addEventListener("changed", client_changed);
+        return action_function(vals, progress_callback)
+                .finally(() => { client.removeEventListener("changed", client_changed) });
+    };
+}

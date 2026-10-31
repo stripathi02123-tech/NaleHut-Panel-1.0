@@ -1,0 +1,118 @@
+/*
+ * Copyright (C) 2023 Red Hat, Inc.
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ */
+
+import client from "../client";
+
+import { get_fstab_config } from "../filesystem/utils.jsx";
+
+import { make_partition_table_page } from "../partitions/partition-table.jsx";
+import { make_legacy_vdo_page } from "../legacy-vdo/legacy-vdo.jsx";
+
+import { make_unrecognized_data_card } from "./unrecognized-data.jsx";
+import { make_unformatted_data_card } from "./unformatted-data.jsx";
+import { make_locked_encrypted_data_card } from "../crypto/locked-encrypted-data.jsx";
+import { make_filesystem_card } from "../filesystem/filesystem.jsx";
+import { make_lvm2_physical_volume_card } from "../lvm2/physical-volume.jsx";
+import { make_mdraid_disk_card } from "../mdraid/mdraid-disk.jsx";
+import { make_stratis_blockdev_card } from "../stratis/blockdev.jsx";
+import { make_swap_card } from "../swap/swap.jsx";
+import { make_encryption_card } from "../crypto/encryption.jsx";
+import { make_btrfs_device_card } from "../btrfs/device.jsx";
+import { make_btrfs_filesystem_card } from "../btrfs/filesystem.jsx";
+import { make_btrfs_subvolume_pages } from "../btrfs/subvolume.jsx";
+
+import { new_page } from "../pages.jsx";
+import { register_available_block_space } from "../utils";
+
+/* CARD must have page_name, page_location, and page_size set.
+ */
+
+export function make_block_page(parent, block, card, options) {
+    let is_crypto = block.IdUsage === 'crypto';
+    let content_block = is_crypto ? client.blocks_cleartext[block.path] : block;
+    const fstab_config = get_fstab_config(content_block || block, true);
+
+    const block_stratis_blockdev = client.blocks_stratis_blockdev[block.path];
+    const block_stratis_stopped_pool = client.blocks_stratis_stopped_pool[block.path];
+    const legacy_vdo = client.legacy_vdo_overlay.find_by_backing_block(block);
+
+    const is_stratis = ((content_block && content_block.IdUsage === "raid" && content_block.IdType === "stratis") ||
+                        (block_stratis_blockdev && client.stratis_pools[block_stratis_blockdev.Pool]) ||
+                        block_stratis_stopped_pool);
+
+    const is_btrfs = (fstab_config.length > 0 &&
+                      (fstab_config[2].indexOf("subvol=") >= 0 || fstab_config[2].indexOf("subvolid=") >= 0));
+
+    const block_btrfs_blockdev = content_block && client.blocks_fsys_btrfs[content_block.path];
+    const single_device_volume = block_btrfs_blockdev && block_btrfs_blockdev.data.num_devices === 1;
+
+    if (client.blocks_ptable[block.path]) {
+        make_partition_table_page(parent, block, card, options && options.partitionable);
+        return;
+    }
+
+    if (legacy_vdo) {
+        make_legacy_vdo_page(parent, legacy_vdo, block, card);
+        return;
+    }
+
+    // Adjust for encryption leaking out of Stratis
+    if (is_crypto && is_stratis) {
+        is_crypto = false;
+        content_block = block;
+    }
+
+    if (is_crypto)
+        card = make_encryption_card(card, block);
+
+    if (!content_block) {
+        if (!is_crypto) {
+            // can not happen unless there is a bug in the code above.
+            console.error("Assertion failure: is_crypto == false");
+        }
+        if (fstab_config.length > 0 && !is_btrfs) {
+            card = make_filesystem_card(card, block, null, fstab_config);
+        } else {
+            card = make_locked_encrypted_data_card(card, block);
+        }
+    } else {
+        const is_filesystem = content_block.IdUsage === 'filesystem';
+        const block_pvol = client.blocks_pvol[content_block.path];
+        const block_swap = client.blocks_swap[content_block.path];
+
+        if (block_btrfs_blockdev) {
+            if (single_device_volume)
+                card = make_btrfs_filesystem_card(card, block, content_block);
+            else
+                card = make_btrfs_device_card(card, block, content_block, block_btrfs_blockdev);
+        } else if (is_filesystem) {
+            card = make_filesystem_card(card, block, content_block, fstab_config);
+        } else if ((content_block.IdUsage === "raid" && content_block.IdType === "LVM2_member") ||
+                   (block_pvol && client.vgroups[block_pvol.VolumeGroup])) {
+            card = make_lvm2_physical_volume_card(card, block, content_block);
+        } else if (is_stratis) {
+            card = make_stratis_blockdev_card(card, block, content_block);
+        } else if ((content_block.IdUsage === "raid") ||
+                   (client.mdraids[content_block.MDRaidMember])) {
+            card = make_mdraid_disk_card(card, block, content_block);
+        } else if (block_swap ||
+                   (content_block.IdUsage === "other" && content_block.IdType === "swap")) {
+            card = make_swap_card(card, block, content_block);
+        } else if (!content_block.IdUsage) {
+            if (!block.HintIgnore)
+                register_available_block_space(client, content_block);
+            card = make_unformatted_data_card(card, block, content_block);
+        } else {
+            card = make_unrecognized_data_card(card, block, content_block);
+        }
+    }
+
+    if (card) {
+        const page = new_page(parent, card);
+        if (block_btrfs_blockdev && single_device_volume)
+            make_btrfs_subvolume_pages(page, block_btrfs_blockdev);
+        return page;
+    }
+}

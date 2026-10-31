@@ -1,0 +1,76 @@
+{
+    "name": "storage",
+    "requires": {
+        "cockpit": "266"
+    },
+    "conditions": [
+        {"path-exists": "/usr/share/dbus-1/system.d/org.freedesktop.UDisks2.conf"}
+    ],
+
+    "menu": {
+        "index": {
+            "label": "Storage",
+            "order": 30,
+            "docs": [
+                {
+                    "label": "Managing partitions",
+                    "url": "https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/managing_file_systems/managing-partitions-using-the-web-console_managing-file-systems"
+                },
+                {
+                    "label": "Managing NFS mounts",
+                    "url": "https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/managing_file_systems/mounting-nfs-shares_managing-file-systems#connecting-nfs-mounts-in-the-web-console_mounting-nfs-shares"
+                },
+                {
+                    "label": "Managing RAIDs",
+                    "url": "https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/managing_storage_devices/managing-raid_managing-storage-devices#creating-raid-in-the-web-console_managing-raid"
+                },
+                {
+                    "label": "Managing LVMs",
+                    "url": "https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/configuring_and_managing_logical_volumes/index"
+                },
+                {
+                    "label": "Managing physical drives",
+                    "url": "https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/managing_storage_devices/index"
+                },
+                {
+                    "label": "Managing VDOs",
+                    "url": "https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/deduplicating_and_compressing_logical_volumes_on_rhel/creating-a-deduplicated-and-compressed-logical-volume_deduplicating-and-compressing-logical-volumes-on-rhel#creating-virtual-data-optimizer-in-the-web-console_creating-a-deduplicated-and-compressed-logical-volume"
+                },
+                {
+                    "label": "Using LUKS encryption",
+                    "url": "https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/managing_storage_devices/encrypting-block-devices-using-luks_managing-storage-devices#configuring-the-luks-passphrase-in-the-web-console_encrypting-block-devices-using-luks"
+                },
+                {
+                    "label": "Using Tang server",
+                    "url": "https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/security_hardening/configuring-automated-unlocking-of-encrypted-volumes-using-policy-based-decryption_security-hardening#configuring-automated-unlocking-using-a-tang-key-in-the-web-console_configuring-automated-unlocking-of-encrypted-volumes-using-policy-based-decryption"
+                }
+            ],
+            "keywords": [
+                {
+                    "matches": ["filesystem", "partition", "nfs", "raid", "volume", "disk", "vdo", "iscsi", "drive", "mount", "unmount", "udisks", "mkfs", "format", "fstab", "lvm2", "luks", "encryption", "nbde", "tang"]
+                }
+            ]
+        }
+    },
+
+    "config": {
+        "nfs_client_package": {
+            "rhel": "nfs-utils", "fedora": "nfs-utils",
+            "opensuse": "nfs-client", "opensuse-leap": "nfs-client",
+            "debian": "nfs-common", "ubuntu": "nfs-common",
+            "arch": "nfs-utils"
+        },
+        "vdo_package": { "rhel": "vdo", "centos": "vdo" },
+        "stratis_package": { "fedora": "stratisd",
+                             "centos": "stratisd",
+                             "arch": "stratisd",
+                             "platform:el9": "stratisd",
+                             "platform:el10": "stratisd"
+                           },
+        "nbde_root_help": { "fedora": true,
+                            "centos": true,
+                            "rhel": true
+                          }
+    },
+    "content-security-policy": "img-src 'self' data:"
+}
