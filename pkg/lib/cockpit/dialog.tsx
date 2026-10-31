@@ -1,0 +1,1971 @@
+/*
+ * Copyright (C) 2025 Red Hat, Inc.
+ *
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ */
+
+/** Dialog Implementation Convenience Kit **/
+
+/* TODOs:
+
+   - progress reporting
+   - array splicing via value handles
+   - different validation rules for different actions
+ */
+
+/* This is a framework for conveniently implementing dialogs. It is
+   meant to save us from having to think through all the details every
+   time of how a dialog should work exactly and to allow us to just
+   get on with the business logic.
+
+   The framework has two parts (like git): plumbing and porcelain.
+
+   The plumbing takes care of the state management of dialog values,
+   asynchronous and debounced input validation, progress feedback and
+   errors from actions, etc. It's basically a couple of rather
+   complicated JavaScript classes that work in the background.  This
+   is the part we don't want to implement from scratch for every
+   dialog.
+
+   The porcelain is a set of React components that integrates with the
+   plumbing. They are usually very straightforward and easy to
+   write. If none of the existing ones works for you, just write a new
+   one that does. But they are boilerplatey, so having common ones for
+   common things like text input fields makes a lot of sense, too.
+
+   Here is an example of a simple dialog that prompts for some text
+   and writes it to the journal:
+
+    interface LoggerValues {
+        text: string;
+    }
+
+    const LoggerDialog = () => {
+        const Dialogs = useDialogs();
+
+        function validate() {
+            dlg.field("text").validate(v => {
+                if (!v)
+                    return "Text can not be empty";
+            });
+        }
+
+        async function apply(values: LoggerValues) {
+            await cockpit.spawn(["logger", values.text]);
+        }
+
+        const dlg = useDialogState({ text: "" }, validate);
+        const text_field = dlg.field("text");
+
+        return (
+            <Modal position="top" variant="medium" isOpen onClose={Dialogs.close}>
+                <ModalHeader title="Logger" />
+                <ModalBody>
+                    <DialogErrorMessage dialog={dlg} />
+                    <Form>
+                        <FormGroup label="Log message">
+                            <TextInput
+                                value={text_field.get()}
+                                onChange={(_event, val) => text_field.set(val)}
+                            />
+                            <DialogHelperText field={text_field} />
+                        </FormGroup>
+                    </Form>
+                </ModalBody>
+                <ModalFooter>
+                    <DialogActionButton dialog={dlg} action={apply} onClose={Dialogs.close}>
+                        Log
+                    </DialogActionButton>
+                    <DialogCancelButton dialog={dlg} onClose={Dialogs.close}/>
+                </ModalFooter>
+            </Modal>
+        );
+    };
+
+    const LoggerButton = () => {
+        const Dialogs = useDialogs();
+
+        return (
+            <Button onClick={() => Dialogs.show(<LoggerDialog />)}>Open logger dialog</Button>
+        );
+    };
+
+   This uses some porcelain for the error message and footer buttons,
+   but none for the text input field.  There is a "DialogTextInput"
+   porcelain component that could have been used to make this example
+   even more concise. But we didn't use it here just to show how input
+   form elements hook into the plumbing.
+
+   PLUMBING API
+
+   The central piece of the plumbing API is the useDialogState hook
+   (and it's async variant useDialogState_async).  You can think of it
+   as "useState" on steroids.
+
+   - Like useState, useDialogState gives you a place to store state in
+     a function component, and gives you a way to change that state
+     and trigger a render so that the new state is put on the screen.
+
+   - Unlike useState, you are only supposed to have a single
+     useDialogState and put all of the state in a single JavaScript
+     object.  And instead of a single setter function, there are ways
+     to get setters to individual parts of that object via "handles".
+
+   - The handles work also for nested objects and arrays. You can get
+     a "sub handles" for a single key from a handle for an object, for
+     example.
+
+   - The useDialogState hook also provides for global validation of
+     the state object, at exactly the right times, and communicates
+     the result of that to the "Apply" button, for example.
+
+   - The handles to parts of the state give you access to everything
+     needed to implement a part of the dialog form: The current value,
+     a method to change the value, and any validation errors that
+     should be shown.  This makes it possible to write encapsulated
+     components that can be cleanly combined into full dialogs.
+
+   - The useDialogState hook also provides for miscellaneous things
+     like transporting the exception from running the "Apply" action
+     to the error message in the dialog.
+
+   Here is a speedrun of the plumbing API:
+
+   - dlg = useDialogState(init, validate)
+
+   This is a React hook that creates a new instance of the plumbing
+   machinery.  It also causes the current component to re-render
+   appropriately.
+
+   The values of the input fields of a dialog are stored in a
+   JavaScript object, and that object is initialized to "init", or the
+   result of calling "init" if it is a function.  The actual values of
+   a dialog can be anything, strings, number, other objects, arrays,
+   etc, to an arbitrary depth.
+
+   The "validate" parameter is a function that performs input
+   validation. It has to follow a very specific code pattern, which is
+   explained below.
+
+   There is a variant of useDialogState for asynchronous
+   initialization, called useDialogState_async. It takes a async init
+   function and returns null until that function has resolved.  You
+   should render a spinner in the dialog while "dlg" is null.
+
+   If the asynchronous "init" function throws an exception, "dlg" is
+   set to a DialogError object. In that case you should render the
+   error in the dialog.
+
+   The porcelain components that do not work on actual dialog values,
+   such as DialogActionButton and DialogErrorMessage, can deal with
+   their "dialog" properties being null or a DialogError, and will do
+   the right thing.
+
+   The return value of useDialogState, "dlg", has a number of fields
+   and methods.
+
+   - handle = dlg.field(name)
+   - handle = dlg.field(name, changed_func)
+
+   This returns a handle for a specific field of the dialog
+   values. Using handles like this becomes convenient when there are
+   nested values, and when writing reusable porcelain components. They
+   also work well with TypeScript. For simple dialogs they might feel
+   a bit clunky.
+
+   The second argument, "changed_func", is optional. If given, it
+   should be a function and that function will be called whenever the
+   dialog value is changed via the returned handle (and the returned
+   handle only).  It might also be called some time later, when
+   "set_debounced" is used.
+
+   - handle = dlg.top()
+   - handle = dlg.top(changed_func)
+
+   Get a handle for the whole value object.  The usual
+   "dlg.field(name)" call is actually just a shortcut for
+   "dlg.top().sub(name)".  But since that looks quite obscure in
+   simple dialogs that only have one level of values, we have the
+   "dlg.field(name)" shortcut as well.  This whole-value handle is
+   useful for "dlg.top().at(...)", see below, or for notifications
+   that trigger for each and every change.
+
+   - dlg.values
+
+   The current whole dialog value object. This is the same as
+   "dlg.top().get()", but accessing it is common enough in simple
+   dialogs that exposing it directly makes sense.
+
+   The object will never be mutated by the plumbing itself. When it
+   needs to be changed, a whole new value object is constructed and
+   assigned to "dlg.values".
+
+   - handle.get()
+
+   Get the current value of a value handle.
+
+   - handle.validation_text()
+
+   Get the current validation error message for this value. This is
+   "undefined" when there is no message.
+
+   - handle.set(val)
+
+   Set the current value of a value handle. This will re-render the
+   dialog, and do input validation as necessary and all the other
+   things that you don't need to think about.
+
+   This is actually the same as "handle.set_debounced" with a delay of
+   0, see below.
+
+   - handle.set_debounced(val)
+   - handle.set_debounced(val, delay)
+
+   Set the current value of a value handle immediately as described
+   above for "handle.set", and render the dialog.  But validation and
+   calling of the "changed" functions happens only after "delay"
+   milliseconds.
+
+   When "delay" is omitted, it defaults to a sensible value for
+   debouncing keyboard input.
+
+   - handle.notify(changed_func)
+
+   Return a new handle for the same dialog field that "handle"
+   represents, but call "changed_func" whenever the field is changed
+   via the new handle.
+
+   - handle.sub(name_or_index)
+   - handle.sub(name_or_index, changed_func)
+
+   Get a handle for a nested value. When the current value is an
+   object, you should pass the name of a nested field. If it is an
+   array, pass the index of the desired element.  See "dlg.field()"
+   above for more information about handles.
+
+   - handle.get_async((val, signal) => ...)
+   - handle.set_async((val, signal) => new_val)
+
+   These are for running asynchronous code.  The dialog waits for all
+   asynchronous tasks started by these functions to be finished before
+   running the action function.  When the dialog is cancelled, they
+   all get cancelled.
+
+   The return value of "handle.set_async" is made the new value of the
+   field, but only if the value of the field hasn't changed in the
+   meantime.  There can only be one currently active "set_async" call.
+   If you call it again before the previous one has finished, that
+   previous call will be cancelled at that point, just as if the field
+   value had changed.
+
+   The "handle.get_async" function is a slight variation on this. It
+   is meant to perform asynchronous computations that do not modify
+   the field value itself, but have some other side effects.  There
+   can be more than one call active at a given time. They only get
+   cancelled when the value of the field changes.
+
+   The asynchronous tasks must be careful to only perform their side
+   effects when they have not been cancelled yet.  This can be done
+   with the help of their "signal" parameter, which is a standard
+   AbortSignal.
+
+   Because of the way JavaScript works, the asynchronous functions
+   keep running and they need to voluntarily inspect "signal.aborted"
+   to figure out when they should stop.  They can also use all other
+   features of a AbortSignal, of course, such as setting
+   "signal.onabort", adding event listeners, etc.
+
+   - handle.at(witness)
+
+   Get a handle with a narrowed type for "handle".  The new handle
+   works like "handle" and modifies the same place in the dialog value
+   object, but it's type will be the type of "witness".  This is
+   useful to carry over type inference into value handles.  The
+   general pattern is:
+
+     const val = handle.get();
+     if (some_type_narrowing_condition(val)) {
+       const narrowed_handle = handle.at(val);
+
+       ...
+     }
+
+   - handle.add(val)
+
+   If the current value is an array, append "val" at the end.
+
+   - handle.remove(index)
+
+   If the current value is an array, remove the element at "index".
+   It is important to use this function instead of just "handle.set()"
+   with an appropriately modified array. By using this function, the
+   plumbing is able to keep its internal state in synch, which is
+   especially important for asynchronous validation and "changed"
+   functions.
+
+   However, it is okay to just replace an array with a different
+   array, so you are not strictly required to use this function. But
+   doing so might look to the validation machinery as if each and
+   every element of the array has just changed, and it will do a lot
+   of needless validations all over again.
+
+   - handle.map(func)
+
+   If the current value is an array, map "func" over handles for its
+   elements. This is nice for creating React components for arrays.
+
+   - handle.forEach(func)
+
+   If the current value is an array, call "func" with handles for each
+   of its elements, in order. This is nice for "validate" functions.
+
+   Now back to the fields and methods of the dialog state.
+
+   - dlg.busy
+   - dlg.actions_disabled
+   - dlg.cancel_disabled
+
+   Boolean flags that indicate which parts of the dialog should be
+   disabled. The porcelain should of course look at these and do the
+   right thing.
+
+   - dlg.error
+
+   The most recent error thrown by an action function.  This can be
+   any kind of JavaScript value, but the idea is that it is something
+   with a "message" field, or a DialogError instance.  The
+   DialogErrorMessage porcelain component will do the right thing with
+   these kind of error values.
+
+   - dlg.run_action(func)
+
+   Waits for all asynchronous updates and input validation to be done
+   and if that was successful, calls "func" and puts the dialog into a
+   "busy" state while it runs. When "func" throws an error, it is
+   caught and stored in "dlg.error".
+
+   "dlg.run_action" returns true when validation has passed and "func"
+   has completed without throwing an error.
+
+   All state changes via "field.set()" are denied while "func" is
+   running. This is done to prevent the user from interacting with the
+   dialog while an action runs. But there is nothing fundamentally
+   wrong with programmatically changing dialog state as part of an
+   action. If you want to do that, write code like
+
+     if (dlg.run_action(...))
+       dlg.field("xxx").set(...)
+
+   - dlg.cancel(onClose)
+
+   Does whatever should happen when the "Cancel" button is
+   clicked. When an action is running, it will call the "cancel
+   function" (see below).  Otherwise all validation and update tasks
+   are cancelled and the dialog is closed by calling "onClose".
+
+   - dlg.set_cancel(func)
+
+   Arranges for "func" to be called when the cancel button is clicked.
+   You should call this only from a action function passed to
+   "run_action" and you need to take care to reset this via
+   "dlg.set_cancel(null)" once the cancel function should no longer be
+   called.  When a action function finishes or throws an error from
+   within "dlg.run_action", the cancel function is automatically
+   reset.
+
+   VALIDATION
+
+   Input validation is done by a single, central function for the
+   whole dialog.  This has been done so that there is a central place
+   that establishes the "shape" of the dialog values. This is
+   important for dialogs that have optional parts.
+
+   If such an optional part of the values has failed validation
+   earlier, but has subsequently been removed from the dialog by the
+   user, the plumbing needs to know that it should now ignore this
+   failed validation. But the code that knows what is currently in the
+   dialog is the render function that instantiates all the field input
+   components (like TextInput). This hacker here has found no reliable
+   and non-magical way to connect what the render function actually
+   does with the plumbing machinery. So everyone has to write a big
+   validate function now that duplicates this, sorry!
+
+   The formal job of the validation function is to call the "validate"
+   method (or "validate_async") of all relevant dialog value handles.
+   If and only if a validation failure of a field should prevent
+   running the action function, should the validate function visit it.
+
+   - handle.validate(v => ...)
+
+   This might call the given function with the current value of the
+   handle. If it passes validation, the function should return
+   "undefined". If it fails, the function should return a string with
+   the appropriate message. This message will be available from the
+   "handle.validation_text" method and should be shown by the React
+   component for this value, of course. Returning an error here will
+   also disable the action buttons.
+
+   The "v => ..." function is only called when necessary, when the
+   value has actually changed.
+
+   A validation function can also return an object with validation
+   errors for its sub-fields.  This is useful if multiple fields need
+   to be validated together.  Consider this example:
+
+       field.validate(v => {
+         if (v.mode != "auto" && v.size == 0)
+           return { "size": "Can't be zero in manual mode." }
+       });
+
+   If your validation function needs to communicate out-of-band with
+   your action function (maybe to pass the results of some expensive
+   operations that you don't want to repeat in your action function),
+   then you can modify field values via calls to "handle.set". (Be
+   careful not to create endless validation loops!)
+
+   - handle.validate_async(async (v, task) >= ...)
+
+   Same as "handle.validate", but the function is asynchronous and
+   "dialog.run_action" will wait for these functions to complete
+   before actually carrying out the dialog action.
+
+   UPDATES
+
+   Sometimes dialog values need to be changed in reaction to other
+   changes.  For example, when the user selects a ISO for creating a
+   new virtual machine, you might want to run some code that detects
+   the OS on that ISO and then adapts the rest of the dialog to the
+   minimum storage requirements of the OS.  Sometimes you can do
+   everything at render time, but sometimes you might want to run some
+   code as part of the event handler for the user action, and
+   sometimes you need to run asynchronous code.
+
+   (Don't use useEffect, please, just stick the code into the event
+   handler.)
+
+   It's okay and simplest to just put that code right next to the call
+   to "handler.set()".  If that call is in a porcelain component (as
+   it probably often will be), you can pass a "changed_func" when
+   creating the handle for that porcelain component with
+   "handler.sub()" or "dialog.field()".  For example:
+
+       function plate_changed(val: string) {
+           console.log("NEW LICENSE PLATE", val);
+       }
+
+       return (
+           <DialogTextInput
+               label="License plate number"
+               field={dlg.field("plate", plate_changed)}
+           />
+       );
+
+   The function "plate_changed" will be called whenever the user
+   changes the "plate" field via the DialogTextInput (subject to
+   debouncing).  The "plate_changed" function will not be called
+   when the "plate" is changed in other places.  If that should
+   happen, you have to arrange for it explicitly.
+
+   Functions like "plate_changed" can and should modify the dialog
+   fields via calls to "handle.set()".
+
+   If you want to run asynchronous code, you can do so with
+   "handle.set_async()" or "handle.get_async()".  For example, if you
+   want to asynchronously fetch the car model for a given license
+   plate from a database, you can do it like this:
+
+       function plate_changed(val: string) {
+           dlg.field("model").set_async(async () => await fetch_model(val));
+       }
+
+   When arrays are involved, dialog fields can move around while your
+   asynchronous update function runs.  To help with this, handles will
+   keep referring to the same field even if it moves around in its
+   array.
+
+   TESTING
+
+   Our automated tests will want to drive the dialogs created by this
+   framework, of course.  To support this, the various DOM elements
+   instantiated for a dialog should be decorated with structured "id"
+   attributes. The code that instantiates an element can get suitable
+   IDs for dialog value handles with the following function:
+
+   - handle.ouia_id(tag)
+
+   This will return a predictable string for the value handle.  This
+   is suitable for the "data-ouia-component-id" attribute of DOM
+   elements associated with "handle".  The "tag" parameter can be used
+   to generate multiple IDs if a component has multiple interesting
+   DOM elements.  The "tag" parameter defaults to "field", see below.
+
+   There is a support library for use by the tests that can generate
+   the same IDs, and there are also some guidelines for how to use
+   these IDs:
+
+     - The main input element (text input, form select, ...) should use
+       the "field" tag.
+
+     - The helper text should use the "helper-text" tag.
+
+     - A set of radio buttons should use a different tag for each
+       button. Whatever makes sense in the specific case.
+
+     - ...
+
+   PORCELAIN GALLERY
+
+   Here are some noteworthy React components that integrate with the
+   plumbing API.
+
+   - <DialogErrorMessage dialog={dlg} />
+
+   This creates an appropriate Alert for "dlg.error", if it is set. It
+   works well with instances of DialogError, and all usual errors
+   thrown by the Cockpit API.
+
+   In addition to a proper DialogState, the "dialog" property can be
+   anything returned by "use_DialogState_async".
+
+   If given one the of Cockpit API errors, the title of the Alert will
+   be a generic "Failed" text. If you want more control, use a
+   DialogError.
+
+   A DialogError contains a title and details, and the details can
+   come from another error.  For example:
+
+       try {
+           await cockpit.spawn(["/bin/frob", "--bars"])
+       } catch (ex) {
+           throw DialogError.fromError("Failed to frob the bars", ex);
+       }
+
+   You can also construct a DialogError directly from title and
+   details:
+
+       throw new DialogError("Failed to frob", <pre>...</pre>);
+
+   In that case, the details can be any React node.
+
+   - <DialogActionButton dialog={dlg} action={func} onClose={close_func}>
+
+   This will produce a action button for a dialog that correctly disables
+   itself according to the state of "dlg".
+
+   In addition to a proper DialogState, the "dialog" property can be
+   anything returned by "use_DialogState_async".
+
+   When clicked, "func" will be run via "dlg.run_action". If "func"
+   completes successfully, "close_func" is called to close the dialog.
+
+   - <DialogCancelButton dialog={dlg} onClose={close_func} />
+
+   This will produce a cancel button for a dialog that correctly
+   disables itself according to the state of "dlg".
+
+   In addition to a proper DialogState, the "dialog" property can be
+   anything returned by "use_DialogState_async".
+
+   Clicking it will either just close the dialog by calling
+   "close_func", or run the cancel function provided by the currently
+   running action function (if there is any).
+
+   - <DialogTextInput label="Name" field={dlg.field("name")} ... />
+
+   This will produce a TextInput in a (optional) FormGroup that will
+   manage the given value handle.  The "label" property is optional
+   and omitting it will also omit the FormGroup.
+
+  - <DialogCheckbox label= field= .../>
+
+  For a single checkbox that drives a boolean.
+
+  - <DialogRadioSelect label= field= options= .../>
+
+  For a group of radio buttons.  The options can be disabled and have
+  explanations.
+
+  - <DialogDropdownSelect label= field= options= .../> </>
+
+  For a simple dropdown select. Options can not be disabled or have
+  explanations.
+
+  - <DialogDropdownSelectObject label= field= options= option_label= />
+
+  A variant of the simple dropdown select from above where the options
+  can be of any type whatsoever, such as something directly from your
+  data model. A simple case is selecting from an array of strings. In
+  that case you can omit the "option_label" function.
+
+ */
+
+import React, { useState, useId } from "react";
+import { useObject, useInit, useOn } from 'hooks';
+import { EventEmitter } from 'cockpit/event';
+
+import cockpit from "cockpit";
+
+import { Button, type ButtonProps } from "@patternfly/react-core/dist/esm/components/Button/index.js";
+import { FormGroup, type FormGroupProps, FormHelperText } from "@patternfly/react-core/dist/esm/components/Form";
+import { TextInput, type TextInputProps } from "@patternfly/react-core/dist/esm/components/TextInput";
+import { Alert } from "@patternfly/react-core/dist/esm/components/Alert/index.js";
+import {
+    HelperText, HelperTextItem, type HelperTextItemProps
+} from "@patternfly/react-core/dist/esm/components/HelperText";
+import { Checkbox } from "@patternfly/react-core/dist/esm/components/Checkbox";
+import {
+    FormSelect, FormSelectOption, type FormSelectProps,
+} from "@patternfly/react-core/dist/esm/components/FormSelect";
+import { Radio } from "@patternfly/react-core/dist/esm/components/Radio";
+import { InputGroup, InputGroupItem } from "@patternfly/react-core/dist/esm/components/InputGroup/index.js";
+import { EyeIcon, EyeSlashIcon } from "@patternfly/react-icons";
+import { Tooltip } from "@patternfly/react-core/dist/esm/components/Tooltip";
+
+const _ = cockpit.gettext;
+
+function debug(...args: unknown[]) {
+    if (window.debugging === "all" || window.debugging?.includes("dialog"))
+        console.debug("dialog:", ...args);
+}
+
+type ArrayElement<ArrayType> =
+  ArrayType extends readonly (infer ElementType)[] ? ElementType : never;
+
+function toSpliced<T>(arr: T[], start: number, deleteCount: number, ...rest: T[]): T[] {
+    const copy = [...arr];
+    copy.splice(start, deleteCount, ...rest);
+    return copy;
+}
+
+/* It would be nice to make it so that TypeScript complains when you
+   try to return errors for sub-fields that don't exist.  We can
+   construct a type that describes this (by recursively mapping all
+   field to strings, essentially), but TypeScript will not ordinarily
+   prevent a validation function from returning something that also
+   has other fields, because it does only do "excessive property
+   checks" for literals that are assigned to locations with a known
+   type.  Example:
+
+      interface ComboValue {
+        size: number;
+        unit: string;
+      }
+
+      dlg.field("combo").validate(v => {
+        return {
+          size: true,           // TypeScript error here as expected, because true is not a string
+          unt: "No such unit",  // Want a TypeScript error here bc there is no "unt" in the type, but won't happen
+        }
+      });
+
+   We would need to explicitly annotate the validation function with
+   the right return type like so:
+
+      dlg.field("combo").validate((v): DialogValidationResult<ComboValue> => {
+        return {
+          unt: "No such unit",  // Now we get an error.
+        }
+      });
+
+   But I doubt that people will be happy to write out their type like
+   this every time...
+ */
+
+export type DialogValidationResult<T> = (
+   T extends object
+    ? ({ [Property in keyof T]+?: DialogValidationResult<T[Property]> } & { ""?: undefined | string }) | undefined | string
+    : undefined | string | { ""?: undefined | string }
+);
+
+function state_path(state: DialogFieldState): string {
+    const p = state.parent ? state_path(state.parent) : "";
+    const t = String(state.tag);
+    return p ? `${p}.${t}` : t;
+}
+
+export class DialogField<T> {
+    /* eslint-disable no-use-before-define */
+    #dialog: DialogState<unknown>;
+    #state: DialogFieldState;
+    /* eslint-enable */
+    #getter: () => T;
+    #setter: (val: T) => void;
+    #trigger: () => void;
+
+    constructor(
+        dialog: DialogState<unknown>,
+        state: DialogFieldState,
+        getter: () => T,
+        setter: (val: T) => void,
+        trigger: () => void,
+    ) {
+        this.#dialog = dialog;
+        this.#state = state;
+        this.#getter = getter;
+        this.#setter = setter;
+        this.#trigger = trigger;
+    }
+
+    validation_text(): string | undefined {
+        return this.#state.validation_text;
+    }
+
+    get(): T {
+        return this.#getter();
+    }
+
+    set(val: T): void {
+        this.set_debounced(val, 0);
+    }
+
+    set_debounced(val: T, delay?: number): void {
+        this.#dialog._abort_state_tasks(this.#state, true);
+        this.#setter(val);
+        this.#dialog._set_debounce(this.#state, delay === undefined ? 500 : delay, () => this.#trigger());
+    }
+
+    ouia_id(tag: string = "field"): string {
+        return "dialog-" + tag + "-" + state_path(this.#state);
+    }
+
+    map<X>(func: (val: DialogField<ArrayElement<T>>, index: number) => X): X[] {
+        const val = this.get();
+        if (Array.isArray(val)) {
+            return val.map((_, i) => func(this.sub(i as keyof T) as DialogField<ArrayElement<T>>, i));
+        } else
+            return [];
+    }
+
+    forEach(func: (val: DialogField<ArrayElement<T>>, index: number) => void): void {
+        const val = this.get();
+        if (Array.isArray(val)) {
+            val.forEach((_, i) => func(this.sub(i as keyof T) as DialogField<ArrayElement<T>>, i));
+        }
+    }
+
+    remove(index: number) {
+        const val = this.get();
+        if (Array.isArray(val)) {
+            const sub = this.#state.sub.get(index);
+            if (sub) {
+                this.#dialog._cancel_debounce(sub);
+                this.#dialog._abort_state_tasks(sub);
+                sub.tag = -1;
+            }
+            for (let j = index; j < val.length - 1; j++) {
+                const sub = this.#state.sub.get(j + 1);
+                if (sub) {
+                    sub.tag = j;
+                    this.#state.sub.set(j, sub);
+                }
+            }
+            this.#state.sub.delete(val.length - 1);
+            this.#setter(toSpliced(val, index, 1) as T);
+            this.#trigger();
+        }
+    }
+
+    add(item: ArrayElement<T>) {
+        const val = this.get();
+        if (Array.isArray(val)) {
+            this.#setter(val.concat(item) as T);
+            this.#trigger();
+        }
+    }
+
+    notify(changed_func: (val: T) => void): DialogField<T> {
+        return new DialogField<T>(
+            this.#dialog,
+            this.#state,
+            this.#getter,
+            this.#setter,
+            () => {
+                changed_func(this.#getter());
+                this.#trigger();
+            },
+        );
+    }
+
+    sub<K extends keyof T>(tag: K, changed_func?: ((val: T[K]) => void) | undefined): DialogField<T[K]> {
+        const sub = this.#dialog._get_sub_state(this.#state, tag);
+
+        const getter = (): T[K] => {
+            const container = this.get();
+            if (Array.isArray(container) && typeof sub.tag == "number") {
+                return container[sub.tag];
+            } else {
+                return container[tag];
+            }
+        };
+
+        const setter = (val: T[K]) => {
+            const container = this.get();
+            if (Array.isArray(container) && typeof sub.tag == "number") {
+                this.#setter(toSpliced(container, sub.tag, 1, val) as T);
+            } else {
+                this.#setter({ ...container, [tag]: val });
+            }
+        };
+
+        const trigger = () => {
+            if (changed_func)
+                changed_func(getter());
+            this.#trigger();
+        };
+
+        return new DialogField<T[K]>(
+            this.#dialog,
+            sub,
+            getter,
+            setter,
+            trigger,
+        );
+    }
+
+    at<TT extends T>(witness: TT): DialogField<TT> {
+        cockpit.assert(Object.is(witness, this.get()));
+        return this as unknown as DialogField<TT>;
+    }
+
+    validate(func: (val: T) => DialogValidationResult<T>): void {
+        const val = this.get();
+        this.#dialog._validate_value(this.#state, val, () => func(val));
+    }
+
+    validate_async(func: (val: T, signal: AbortSignal) => Promise<DialogValidationResult<T>>): void {
+        const val = this.get();
+        this.#dialog._validate_value_async(this.#state, val, signal => func(val, signal));
+    }
+
+    set_async(func: (val: T, signal: AbortSignal) => Promise<T>): void {
+        const val = this.get();
+        this.#dialog._set_value_async(this.#state, async signal => {
+            const new_val = await func(val, signal);
+            if (!signal.aborted)
+                this.set(new_val);
+        });
+    }
+
+    get_async(func: (val: T, signal: AbortSignal) => Promise<void>): void {
+        const val = this.get();
+        this.#dialog._get_value_async(this.#state, signal => func(val, signal));
+    }
+}
+
+function get_validation_result_own_string(result: unknown): string | undefined {
+    if (typeof result == "string")
+        return result;
+    else if (result && typeof result == "object" && "" in result && typeof result[""] == "string")
+        return result[""];
+    else
+        return undefined;
+}
+
+export class DialogTask {
+    #name: string;
+    #promise: Promise<void>;
+    #controller: AbortController;
+
+    constructor(
+        name: string,
+        func: (task: DialogTask) => Promise<void>,
+        done: (task: DialogTask) => void,
+    ) {
+        debug("starting task", name);
+        this.#name = name;
+        this.#controller = new AbortController();
+        this.#promise = func(this);
+        this.#promise.finally(() => {
+            debug("task done", this.#name);
+            done(this);
+        });
+    }
+
+    async wait() {
+        debug("waiting for task", this.#name);
+        await this.#promise;
+    }
+
+    get_abort_signal() {
+        return this.#controller.signal;
+    }
+
+    abort() {
+        debug("aborting task", this.#name);
+        this.#controller.abort();
+    }
+}
+
+/* A DialogFieldState object holds all state for a field.  Unlike
+   handles, there is at most one of these objects for each field, and
+   each handle for a given field refers to the exact same
+   DialogFieldState object.
+
+   DialogFieldStates are created on-demand and will over time form a
+   tree (expressed via "parent" and the children in the "sub" map)
+   that corresponds to the nesting of the dialog values.
+
+   The "tag" is used to access the dialog value.  A handle constructed
+   via dlg.field("name") will point to a state object with tag "name",
+   for example, and calling handle.get() will return
+   dlg.values["name"].
+
+   Other members of a DialogFieldState relate to validation and
+   asynchronous updates.
+ */
+
+interface DialogFieldState {
+    parent: DialogFieldState | null,
+    tag: string | number | symbol;
+    sub: Map<string | number | symbol, DialogFieldState>;
+    // debouncing
+    debounce_timer: number;
+    debounce_func: null | (() => void);
+    // validation
+    relevant: boolean;
+    validation_text: string | undefined;
+    cached_value: unknown;
+    cached_result: unknown;
+    validation_task: DialogTask | null;
+    // updates
+    update_task: DialogTask | null;
+    update_tasks: Set<DialogTask>;
+}
+
+interface DialogStateEvents {
+    changed(): void;
+}
+
+export class DialogState<V> extends EventEmitter<DialogStateEvents> {
+    values: V;
+
+    busy: boolean = false;
+    actions_disabled: boolean = false;
+    cancel_disabled: boolean = false;
+
+    error: unknown = null;
+
+    #validation_failed: boolean = false;
+    #online_validation: boolean = false;
+    #action_running: boolean = false;
+    #block_updates: boolean = false;
+    #cancel_function: (() => void) | null = null;
+
+    #top_state: DialogFieldState;
+
+    /* eslint-disable no-use-before-define */
+    #validate_callback: undefined | ((dlg: DialogState<V>) => void);
+    /* eslint-enable */
+
+    constructor(init: V, validate: undefined | ((dlg: DialogState<V>) => void)) {
+        debug("open");
+        super();
+        this.#validate_callback = validate;
+        this.values = init;
+        this.#top_state = {
+            parent: null,
+            tag: "",
+            sub: new Map(),
+            debounce_timer: 0,
+            debounce_func: null,
+            relevant: false,
+            validation_text: undefined,
+            cached_value: undefined,
+            cached_result: undefined,
+            validation_task: null,
+            update_task: null,
+            update_tasks: new Set(),
+        };
+    }
+
+    #update() {
+        this.busy = this.#action_running;
+        this.actions_disabled = this.#action_running || this.#validation_failed;
+        this.cancel_disabled = this.#action_running && !this.#cancel_function;
+        this.emit("changed");
+    }
+
+    /* FIELD STATES
+
+       During validation and asynchronous updates, a lot is going on.
+
+       We use a DialogFieldState object to keep the necessary
+       state for that, such as cached results, and timeouts and
+       promises.
+
+       These state objects keep their identity when arrays elements
+       move around.  Their "index" field will be changed when that
+       happens.
+     */
+
+    _get_sub_state(state: DialogFieldState, tag: string | number | symbol): DialogFieldState {
+        let sub = state.sub.get(tag);
+        if (!sub) {
+            sub = {
+                parent: state,
+                tag,
+                sub: new Map(),
+                debounce_timer: 0,
+                debounce_func: null,
+                relevant: false,
+                validation_text: undefined,
+                cached_value: undefined,
+                cached_result: undefined,
+                validation_task: null,
+                update_task: null,
+                update_tasks: new Set(),
+            };
+            state.sub.set(tag, sub);
+        }
+        return sub;
+    }
+
+    _for_each_field_state(func: (state: DialogFieldState) => void) {
+        function visit(state: DialogFieldState) {
+            func(state);
+            for (const sub of state.sub.values())
+                visit(sub);
+        }
+        visit(this.#top_state);
+    }
+
+    async _for_each_field_state_async(func: (state: DialogFieldState) => Promise<void>) {
+        async function visit(state: DialogFieldState) {
+            await func(state);
+            for (const sub of state.sub.values())
+                await visit(sub);
+        }
+        await visit(this.#top_state);
+    }
+
+    /* DEBOUNCING
+     */
+
+    _cancel_debounce(state: DialogFieldState) {
+        if (state.debounce_timer) {
+            debug("cancelling debounce", state_path(state));
+            window.clearTimeout(state.debounce_timer);
+            state.debounce_timer = 0;
+            state.debounce_func = null;
+        }
+        for (const sub of state.sub.values())
+            this._cancel_debounce(sub);
+    }
+
+    _set_debounce(state: DialogFieldState, delay: number, func: () => void) {
+        if (this.#block_updates)
+            return;
+
+        this._cancel_debounce(state);
+
+        if (delay === 0) {
+            debug("no debounce trigger", state_path(state));
+            func();
+        } else {
+            debug("debounce trigger", state_path(state), delay);
+            state.debounce_func = func;
+            state.debounce_timer = window.setTimeout(
+                () => {
+                    state.debounce_timer = 0;
+                    state.debounce_func = null;
+                    func();
+                },
+                delay,
+            );
+        }
+    }
+
+    _run_all_debouncing_now() {
+        let debounced: boolean;
+        do {
+            debounced = false;
+            this._for_each_field_state(state => {
+                if (state.debounce_timer) {
+                    debug("running debounced trigger now", state_path(state));
+                    cockpit.assert(state.debounce_func);
+                    window.clearTimeout(state.debounce_timer);
+                    state.debounce_timer = 0;
+                    state.debounce_func();
+                    debounced = true;
+                }
+            });
+        } while (debounced);
+    }
+
+    /* TASKS
+
+       Tasks are a little abstraction that runs a asynchronous
+       function.  Before running the action function, we need to wait
+       for them all to finish.
+     */
+
+    async _run_all_tasks_now() {
+        let awaited: boolean;
+        do {
+            // Start all the things that might have been queued up for
+            // debouncing.
+
+            this._run_all_debouncing_now();
+
+            // Wait for the tasks that are currently running.  While
+            // waiting, new things might have been queued up for
+            // debouncing or new tasks might have been started, so we
+            // have to go back to the beginning.
+
+            awaited = false;
+            await this._for_each_field_state_async(async state => {
+                if (state.validation_task) {
+                    await state.validation_task.wait();
+                    awaited = true;
+                }
+                if (state.update_task) {
+                    await state.update_task.wait();
+                    awaited = true;
+                }
+                for (const task of state.update_tasks.values()) {
+                    await task.wait();
+                    awaited = true;
+                }
+            });
+        } while (awaited);
+    }
+
+    _abort_state_tasks(state: DialogFieldState, only_updates: boolean = false) {
+        debug("cancelling state tasks", state_path(state), only_updates);
+        if (state.validation_task && !only_updates)
+            state.validation_task.abort();
+        if (state.update_task)
+            state.update_task.abort();
+        for (const task of state.update_tasks.values())
+            task.abort();
+        for (const sub of state.sub.values())
+            this._abort_state_tasks(sub, only_updates);
+    }
+
+    /* VALIDATION
+
+       Validation is started by calling the #trigger_validation
+       method. This will reset all validation errors and mark all
+       fields as "irrelevant". Then it calls the provided "validate"
+       callback, which in turn will (eventually but synchronously)
+       call the "_validate_value" or "_validate_value_async" methods
+       of all relevant value paths.  Those functions will mark their
+       fields as relevant and eventually call #set_validation to
+       install the validation results in the field states.
+
+       After this, all irrelevant asynchronous validation tasks are
+       cancelled.
+     */
+
+    #validation_needed: boolean = false;
+    #validation_running: boolean = false;
+
+    #trigger_validation(): void {
+        debug("trigger validation");
+        if (!this.#validate_callback)
+            return;
+
+        this.#validation_needed = true;
+        if (this.#validation_running) {
+            debug("validation postponed");
+            return;
+        }
+
+        this.#validation_running = true;
+        while (this.#validation_needed) {
+            debug("running validation");
+            this.#validation_needed = false;
+            this.#validation_failed = false;
+            this._for_each_field_state(state => {
+                state.relevant = false;
+                state.validation_text = undefined;
+            });
+            this.#validate_callback(this);
+            this._for_each_field_state(state => {
+                if (!state.relevant && state.validation_task) {
+                    debug("aborting irrelevant validation task", state_path(state));
+                    state.validation_task.abort();
+                }
+            });
+        }
+        this.#validation_running = false;
+
+        this.#update();
+    }
+
+    #set_validation(state: DialogFieldState, result: unknown) {
+        if (result) {
+            const own = get_validation_result_own_string(result);
+            if (own) {
+                state.validation_text = own;
+                this.#validation_failed = true;
+                this.#online_validation = true;
+            }
+            if (typeof result == "object") {
+                for (const [k, v] of Object.entries(result)) {
+                    const sub = k && state.sub.get(k);
+                    if (sub)
+                        this.#set_validation(sub, v);
+                }
+            }
+        }
+    }
+
+    /* The field state has a cache of the most recently validated
+       value.  If the current value is still the same, actual
+       validation is skipped and the cached result from last time is
+       used.
+
+       Calling #set_validation_state_result is the final thing that
+       should happen when validating a field. It will install the
+       result in the cache and then call #set_validation.
+     */
+
+    #set_validation_state_result(
+        state: DialogFieldState,
+        val: unknown,
+        result: unknown,
+    ) {
+        state.cached_value = val;
+        state.cached_result = result;
+        this.#set_validation(state, result);
+    }
+
+    /* The first thing should be of course to probe that cache.  If we
+       get a hit, it is used immediately to call #set_validation.
+     */
+
+    #probe_validation_state_cache(state: DialogFieldState, val: unknown): boolean {
+        if (Object.is(state.cached_value, val)) {
+            debug("cache hit", state_path(state), JSON.stringify(val), state.cached_result);
+            this.#set_validation(state, state.cached_result);
+            return true;
+        } else
+            return false;
+    }
+
+    /* And in fact, _validate_value does exactly those two things.
+     */
+
+    _validate_value(state: DialogFieldState, val: unknown, func: () => unknown): void {
+        state.relevant = true;
+        if (!this.#probe_validation_state_cache(state, val)) {
+            const result = func();
+            debug("sync validate", state_path(state), JSON.stringify(result));
+            this.#set_validation_state_result(state, val, result);
+        }
+    }
+
+    /* Now asynchronous validation.
+
+       If there was no cache hit, asynchronous validation starts with
+       a timeout, followed by letting a asynchronous function run to
+       resolution.  This is managed by a DialogTask.
+
+       Starting a new task of course aborts any previous one. It also
+       installs the current value in the cache, so that subsequent
+       validation rounds do nothing until the value actually changes.
+
+       When the validation result has been computed, we need to check
+       whether we have been aborted so that we don't install
+       out-dated results.
+     */
+
+    _validate_value_async(
+        state: DialogFieldState,
+        val: unknown,
+        func: (signal: AbortSignal) => Promise<unknown>
+    ): void {
+        state.relevant = true;
+        if (!this.#probe_validation_state_cache(state, val)) {
+            state.cached_value = val;
+            state.cached_result = undefined;
+
+            if (state.validation_task)
+                state.validation_task.abort();
+            state.validation_task = new DialogTask(
+                state_path(state) + ":validate",
+                async task => {
+                    const signal = task.get_abort_signal();
+                    let result;
+                    try {
+                        result = await func(signal);
+                    } catch (ex) {
+                        console.error(ex);
+                    }
+                    if (!signal.aborted) {
+                        debug("async validate result", state_path(state), result);
+                        this.#set_validation_state_result(state, val, result);
+                        this.#update();
+                    }
+                },
+                task => {
+                    if (state.validation_task === task)
+                        state.validation_task = null;
+                }
+            );
+        }
+    }
+
+    _set_value_async(
+        state: DialogFieldState,
+        func: (signal: AbortSignal) => Promise<void>
+    ): void {
+        if (state.update_task)
+            state.update_task.abort();
+
+        state.update_task = new DialogTask(
+            state_path(state) + ":set",
+            async task => {
+                try {
+                    await func(task.get_abort_signal());
+                } catch (ex) {
+                    console.error(ex);
+                }
+            },
+            task => {
+                if (state.update_task === task)
+                    state.update_task = null;
+            }
+        );
+    }
+
+    _get_value_async(
+        state: DialogFieldState,
+        func: (signal: AbortSignal) => Promise<void>
+    ): void {
+        const task = new DialogTask(
+            state_path(state) + ":get",
+            async task => {
+                try {
+                    await func(task.get_abort_signal());
+                } catch (ex) {
+                    console.error(ex);
+                }
+            },
+            task => {
+                state.update_tasks.delete(task);
+            }
+        );
+
+        state.update_tasks.add(task);
+    }
+
+    /* The first thing run_action does is to trigger a new validation
+       round and then wait for all the asynchronous results to have
+       come in.
+
+       If there are any DialogFieldState objects that are waiting
+       for a timeout, we want to abort those and start over, so that
+       their validation starts immediately. (Also, it would be hairy
+       to wait for those timeouts to be over from here.)
+     */
+
+    async validate(): Promise<boolean> {
+        this.#online_validation = true;
+        this.#trigger_validation();
+        await this._run_all_tasks_now();
+        return !this.#validation_failed;
+    }
+
+    set_cancel(cancel: (() => void) | null) {
+        this.#cancel_function = cancel;
+        this.#update();
+    }
+
+    async run_action(func: (vals: V) => Promise<void>): Promise<boolean> {
+        this.error = null;
+        this.#cancel_function = null;
+        this.#action_running = true;
+        this.#update();
+        if (!await this.validate()) {
+            this.#action_running = false;
+            this.#update();
+            return false;
+        }
+
+        try {
+            this.#block_updates = true;
+            await func(this.values);
+        } catch (ex) {
+            console.error(String(ex));
+            this.error = ex;
+        }
+
+        this.#cancel_function = null;
+        this.#action_running = false;
+        this.#block_updates = false;
+        this.#update();
+
+        return !this.error;
+    }
+
+    cancel(onClose: () => void): void {
+        if (this.#action_running) {
+            if (this.#cancel_function)
+                this.#cancel_function();
+        } else {
+            this._cancel_debounce(this.#top_state);
+            this._abort_state_tasks(this.#top_state);
+            onClose();
+        }
+    }
+
+    top(changed_func?: ((values: V) => void) | undefined): DialogField<V> {
+        return new DialogField<V>(
+            this as DialogState<unknown>,
+            this.#top_state,
+            () => this.values,
+            (val) => {
+                debug("set", val);
+                if (this.#block_updates) {
+                    // Deny state changes while actions run.  This
+                    // prevents the user from interacting with the
+                    // dialog while it is busy. The alternative would
+                    // be to officially disable all fields and prevent
+                    // interactions that way, but that is visually
+                    // very jarring and not something that we have
+                    // been doing earlier.
+                    debug("set denied");
+                    return;
+                }
+                this.values = val;
+                this.#update();
+            },
+            () => {
+                if (this.#online_validation)
+                    this.#trigger_validation();
+                if (changed_func)
+                    changed_func(this.values);
+            },
+        );
+    }
+
+    field<K extends keyof V>(tag: K, changed_func?: ((val: V[K]) => void) | undefined): DialogField<V[K]> {
+        return this.top().sub(tag, changed_func);
+    }
+}
+
+export class DialogError {
+    title: string;
+    details: React.ReactNode;
+
+    constructor(title: string, details?: React.ReactNode) {
+        this.title = title;
+        this.details = details;
+    }
+
+    toString() {
+        return this.title + ": " + String(this.details);
+    }
+
+    static fromError(title: string, err: unknown) {
+        if (err && typeof err == "object" && "message" in err && typeof err.message == "string") {
+            return new DialogError(title, err.message);
+        } else {
+            return new DialogError(title, String(err));
+        }
+    }
+}
+
+export function useDialogState<V extends object>(
+    init: V | (() => V),
+    validate?: undefined | ((dlg: DialogState<V>) => void),
+) : DialogState<V> {
+    const dlg = useObject(
+        () => new DialogState(
+            typeof init == "function" ? init() : init,
+            validate
+        ),
+        null,
+        []
+    );
+    useOn(dlg, "changed");
+    return dlg;
+}
+
+export function useDialogState_async<V extends object>(
+    init: () => Promise<V>,
+    validate?: undefined | ((dlg: DialogState<V>) => void),
+) : null | DialogError | DialogState<V> {
+    const [dlg, setDlg] = useState<null | DialogError | DialogState<V>>(null);
+    useOn((dlg instanceof DialogError ? null : dlg), "changed");
+    useInit(async () => {
+        try {
+            setDlg(new DialogState<V>(await init(), validate));
+        } catch (ex) {
+            if (ex instanceof DialogError)
+                setDlg(ex);
+            else
+                setDlg(DialogError.fromError(_("Error during initialization"), ex));
+        }
+    });
+    return dlg;
+}
+
+// Common elements
+
+export function DialogErrorMessage<V>({
+    dialog,
+} : {
+    dialog: DialogState<V> | DialogError | null,
+}) {
+    const err = (!dialog || dialog instanceof DialogError) ? dialog : dialog.error;
+    if (!err)
+        return null;
+
+    let title: string;
+    let details: React.ReactNode;
+
+    if (err instanceof DialogError) {
+        title = err.title;
+        details = err.details;
+    } else if (err && typeof err == "object" && "message" in err && typeof err.message == "string") {
+        title = _("Failed");
+        details = err.message;
+    } else {
+        title = _("Failed");
+        details = String(err);
+    }
+
+    return (
+        <Alert
+            ouiaId="dialog-error-message"
+            variant='danger'
+            isInline
+            title={title}
+        >
+            {details}
+        </Alert>
+    );
+}
+
+export function DialogActionButton<V>({
+    dialog,
+    action,
+    excuse,
+    onClose = undefined,
+    isDisabled,
+    isAriaDisabled,
+    ...props
+} : {
+    dialog: DialogState<V> | DialogError | null,
+    action: (values: V) => Promise<void>,
+    excuse?: string | undefined,
+    onClose?: undefined | (() => void)
+} & Omit<ButtonProps, "action">) {
+    const [running, setRunning] = useState(false);
+
+    const btn = (
+        <Button
+            ouiaId="dialog-apply"
+            isLoading={!!dialog && !(dialog instanceof DialogError) && dialog.busy && running}
+            isDisabled={!dialog || dialog instanceof DialogError || dialog.actions_disabled || !!isDisabled}
+            isAriaDisabled={!!excuse || !!isAriaDisabled}
+            onClick={async () => {
+                cockpit.assert(dialog && !(dialog instanceof DialogError));
+                setRunning(true);
+                if (await dialog.run_action(action) && onClose)
+                    onClose();
+                setRunning(false);
+            }}
+            {...props}
+        />
+    );
+
+    if (excuse) {
+        return (
+            <Tooltip
+                content={excuse}
+            >
+                {btn}
+            </Tooltip>
+        );
+    } else {
+        return btn;
+    }
+}
+
+export function DialogCancelButton<V>({
+    dialog,
+    onClose,
+    isDisabled,
+    children,
+    ...props
+} : {
+    dialog: DialogState<V> | DialogError | null,
+    onClose: () => void
+} & ButtonProps) {
+    return (
+        <Button
+            ouiaId="dialog-cancel"
+            isDisabled={!dialog || (dialog instanceof DialogState && dialog.cancel_disabled) || !!isDisabled}
+            variant="link"
+            onClick={() => {
+                if (dialog instanceof DialogState)
+                    dialog.cancel(onClose);
+                else
+                    onClose();
+            }}
+            {...props}
+        >
+            {children || _("Cancel")}
+        </Button>
+    );
+}
+
+/* Common dialog field implementations.
+ */
+
+type falsy = null | undefined | false;
+
+export function DialogHelperText<V>({
+    field,
+    excuse,
+    warning,
+    explanation,
+} : {
+    field: DialogField<V>;
+    excuse?: string | falsy;
+    warning?: React.ReactNode;
+    explanation?: React.ReactNode;
+}) {
+    let text: React.ReactNode = field.validation_text();
+    let variant: HelperTextItemProps["variant"] = "error";
+    if (!text && excuse) {
+        text = excuse;
+        variant = "default";
+    }
+    if (!text && warning) {
+        text = warning;
+        variant = "warning";
+    }
+    if (!text) {
+        text = explanation;
+        variant = "default";
+    }
+
+    if (!text)
+        return null;
+
+    return (
+        <FormHelperText>
+            <HelperText>
+                <HelperTextItem data-ouia-component-id={field.ouia_id("helper-text")} variant={variant}>
+                    {text}
+                </HelperTextItem>
+            </HelperText>
+        </FormHelperText>
+    );
+}
+
+/* Many of the porcelain wrappers can put themselves automatically
+   into a FormGroup.  In that case, the <label> produced by the
+   FormGroup and the actual input element should be connected via
+   "for" and "id" attributes, for a11y reasons.
+
+   But a porcelain wrapper can also be used without an automatic
+   FormGroup. In that case the user has to provide an explicit id for
+   making that connection or maybe an aria-label.
+
+   The useFormId hook helps with that.
+ */
+
+function useFormId(id: string | undefined, label: React.ReactNode) {
+    const random_id = useId();
+    return id || (label ? random_id : undefined);
+}
+
+export const OptionalFormGroup = ({
+    label,
+    children,
+    fieldId,
+    ...props
+} : {
+    label: React.ReactNode,
+    children: React.ReactNode,
+    fieldId?: string | undefined,
+} & Omit<FormGroupProps, "fieldId" | "label" | "children">) => {
+    if (label) {
+        return (
+            <FormGroup
+                label={label}
+                {...fieldId ? { fieldId } : {} }
+                {...props}
+            >
+                {children}
+            </FormGroup>
+        );
+    } else {
+        return children;
+    }
+};
+
+export const DialogTextInput = ({
+    label = null,
+    field,
+    debounce,
+    excuse,
+    warning,
+    explanation,
+    isDisabled = false,
+    id,
+    ...props
+} : {
+    label?: React.ReactNode,
+    field: DialogField<string>,
+    debounce?: number | undefined,
+    excuse?: string | falsy,
+    warning?: React.ReactNode,
+    explanation?: React.ReactNode,
+    isDisabled?: boolean,
+} & Omit<TextInputProps, "label" | "value" | "onChange">) => {
+    const fid = useFormId(id, label);
+    return (
+        <OptionalFormGroup label={label} fieldId={fid}>
+            <TextInput
+                id={fid}
+                ouiaId={field.ouia_id()}
+                value={field.get()}
+                onChange={(_event, val) => field.set_debounced(val, debounce)}
+                isDisabled={!!excuse || isDisabled}
+                {...props}
+            />
+            <DialogHelperText explanation={explanation} warning={warning} excuse={excuse} field={field} />
+        </OptionalFormGroup>
+    );
+};
+
+export const DialogPasswordInput = ({
+    label = null,
+    field,
+    debounce,
+    excuse,
+    warning,
+    explanation,
+    isDisabled = false,
+    id,
+    ...props
+} : {
+    label?: React.ReactNode,
+    field: DialogField<string>,
+    debounce?: number | undefined,
+    excuse?: string | falsy,
+    warning?: React.ReactNode,
+    explanation?: React.ReactNode,
+    isDisabled?: boolean,
+} & Omit<TextInputProps, "label" | "value" | "onChange">) => {
+    const [visible, setVisible] = useState(false);
+    const fid = useFormId(id, label);
+    return (
+        <OptionalFormGroup label={label} fieldId={fid}>
+            <InputGroup>
+                <InputGroupItem isFill>
+                    <TextInput
+                        id={fid}
+                        ouiaId={field.ouia_id()}
+                        type={visible ? "text" : "password"}
+                        value={field.get()}
+                        onChange={(_event, value) => field.set_debounced(value, debounce)}
+                        isDisabled={!!excuse || isDisabled}
+                        {...props}
+                    />
+                </InputGroupItem>
+                <InputGroupItem>
+                    <Button
+                        variant="control"
+                        aria-label={visible ? _("Hide password") : _("Show password")}
+                        onClick={() => setVisible(!visible)}
+                    >
+                        {visible ? <EyeSlashIcon /> : <EyeIcon />}
+                    </Button>
+                </InputGroupItem>
+            </InputGroup>
+            <DialogHelperText explanation={explanation} warning={warning} excuse={excuse} field={field} />
+        </OptionalFormGroup>
+    );
+};
+
+export const DialogCheckbox = ({
+    field_label = null,
+    checkbox_label,
+    field,
+    excuse,
+    warning,
+    explanation,
+} : {
+    field_label?: React.ReactNode,
+    checkbox_label: string,
+    field: DialogField<boolean>,
+    excuse?: string | falsy,
+    warning?: React.ReactNode,
+    explanation?: React.ReactNode,
+}) => {
+    const id = useId();
+    return (
+        <OptionalFormGroup label={field_label} hasNoPaddingTop>
+            <Checkbox
+                id={id}
+                ouiaId={field.ouia_id()}
+                isChecked={field.get()}
+                label={checkbox_label}
+                onChange={(_event, checked) => field.set(checked)}
+                isDisabled={!!excuse}
+            />
+            <DialogHelperText explanation={explanation} warning={warning} excuse={excuse} field={field} />
+        </OptionalFormGroup>
+    );
+};
+
+export interface DialogRadioSelectOption<T extends string> {
+    value: T,
+    label: React.ReactNode,
+    explanation?: React.ReactNode,
+    excuse?: string | falsy,
+}
+
+export function DialogRadioSelect<T extends string>({
+    label = null,
+    field,
+    options,
+    warning,
+    explanation,
+    isInline = false,
+} : {
+    label?: React.ReactNode,
+    field: DialogField<T>,
+    options: DialogRadioSelectOption<T>[],
+    warning?: React.ReactNode,
+    explanation?: React.ReactNode,
+    isInline?: boolean,
+}) {
+    const random_id = useId();
+
+    function makeLabel(o: DialogRadioSelectOption<T>, i: number) {
+        const exc = o.excuse ? <> ({o.excuse})</> : null;
+        const pad = (!isInline && i < options.length - 1) ? <><br />{"\u00A0"}</> : null;
+        const exp = o.explanation ? <><br /><small>{o.explanation}{pad}</small></> : null;
+        return <div data-ouia-component-id={field.ouia_id(o.value + "-label")}>{o.label}{exc}{exp}</div>;
+    }
+
+    return (
+        <OptionalFormGroup
+            label={label}
+            hasNoPaddingTop
+            isInline={isInline}
+            ouiaId={field.ouia_id()}
+            data-value={field.get()}
+        >
+            {
+                options.map((o, i) =>
+                    <Radio
+                        key={o.value}
+                        id={random_id + o.value}
+                        ouiaId={field.ouia_id(o.value)}
+                        name={o.value}
+                        isChecked={field.get() === o.value}
+                        label={makeLabel(o, i)}
+                        onChange={() => field.set(o.value)}
+                        isDisabled={!!o.excuse}
+                    />
+                )
+            }
+            <DialogHelperText explanation={explanation} warning={warning} field={field} />
+        </OptionalFormGroup>
+    );
+}
+
+export interface DialogDropdownSelectOption<T extends string> {
+    value: T;
+    label: string;
+}
+
+export function DialogDropdownSelect<T extends string>({
+    label,
+    field,
+    excuse,
+    warning,
+    explanation,
+    options,
+    id,
+    ...props
+} : {
+    label?: React.ReactNode,
+    field: DialogField<T>,
+    excuse?: string | falsy,
+    warning?: React.ReactNode,
+    explanation?: React.ReactNode,
+    options: DialogDropdownSelectOption<T>[],
+} & Omit<FormSelectProps, "ref" | "children">) {
+    const fid = useFormId(id, label);
+    return (
+        <OptionalFormGroup label={label} fieldId={fid}>
+            <FormSelect
+                id={fid}
+                ouiaId={field.ouia_id()}
+                onChange={(_event, val) => field.set(val as T) }
+                validated={warning ? "warning" : undefined}
+                isDisabled={!!excuse}
+                value={field.get()}
+                {...props}
+            >
+                {
+                    options.map(
+                        o => {
+                            return <FormSelectOption key={o.value} value={o.value} label={o.label} />;
+                        }
+                    )
+                }
+            </FormSelect>
+            <DialogHelperText explanation={explanation} warning={warning} excuse={excuse} field={field} />
+        </OptionalFormGroup>
+    );
+}
+
+export function DialogDropdownSelectObject<T>({
+    label,
+    field,
+    excuse,
+    warning,
+    explanation,
+    options,
+    option_label = (o: T): string => { cockpit.assert(typeof o == "string"); return o },
+    id,
+    ...props
+} : {
+    label?: React.ReactNode,
+    field: DialogField<T>,
+    excuse?: string | falsy,
+    warning?: React.ReactNode,
+    explanation?: React.ReactNode,
+    options: T[],
+    option_label?: (o: T) => string,
+} & Omit<FormSelectProps, "ref" | "children">) {
+    const fid = useFormId(id, label);
+    return (
+        <OptionalFormGroup label={label} fieldId={fid}>
+            <FormSelect
+                id={fid}
+                ouiaId={field.ouia_id()}
+                onChange={(_event, val) => {
+                    const opt = options.find(o => option_label(o) === val);
+                    field.set(opt!);
+                }}
+                validated={warning ? "warning" : undefined}
+                isDisabled={!!excuse}
+                value={option_label(field.get())}
+                {...props}
+            >
+                {
+                    options.map(
+                        o => {
+                            const l = option_label(o);
+                            return <FormSelectOption key={l} value={l} label={l} />;
+                        }
+                    )
+                }
+            </FormSelect>
+            <DialogHelperText explanation={explanation} warning={warning} excuse={excuse} field={field} />
+        </OptionalFormGroup>
+    );
+}

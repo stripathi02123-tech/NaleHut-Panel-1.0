@@ -1,0 +1,50 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
+/*
+ * NaleHut design tokens.
+ *
+ * Re-maps the PatternFly brand color scales from the default blue to
+ * the NaleHut teal→ocean-blue identity (picked from the NaleHut logo
+ * gradient: #42b2af → #2d6ea5).
+ *
+ * Only palette scale tokens are redefined here; every semantic token
+ * (brand--default, brand--hover, icon/text--brand, borders, links, ...)
+ * points at these scales, so the whole UI follows automatically, in
+ * light and dark mode.
+ */
+
+:root {
+  // Brand scale (light mode)
+  --pf-t--global--color--brand--100: #17a2a4; // teal 400
+  --pf-t--global--color--brand--200: #128386; // teal 500 — main brand color
+  --pf-t--global--color--brand--300: #0d6a6c; // teal 600 — hover / clicked
+  --pf-t--global--color--brand--400: #0b5a5c;
+  --pf-t--global--color--brand--500: #084648;
+
+  // Soft brand tints (selected menu items, subtle fills)
+  --pf-t--global--color--brand--subtle--100: #e2f4f4;
+  --pf-t--global--color--brand--subtle--200: #c5e9e9;
+  --pf-t--global--color--brand--subtle--300: #17a2a4;
+  --pf-t--global--color--brand--subtle--400: #128386;
+
+  // Text links (visited keeps a distinguishable hue)
+  --pf-t--global--text--color--link--100: #0f7d80;
+  --pf-t--global--text--color--link--200: #0d6a6c;
+  --pf-t--global--text--color--link--250: #0b5a5c;
+
+  // NaleHut shell accent (top line of the page, host accent fallback)
+  --ct-color-host-accent: var(--pf-t--global--color--brand--100);
+}
+
+// Dark mode: lighter teal brand, inverse (dark) text lands on top of it
+.pf-v6-theme-dark {
+  --pf-t--global--dark--color--brand--100: #63c9c9;
+  --pf-t--global--dark--color--brand--200: #8adcdc;
+  --pf-t--global--dark--color--brand--300: #b2e8e8;
+
+  --pf-t--global--dark--color--brand--subtle--100: #0a4a4c;
+  --pf-t--global--dark--color--brand--subtle--200: #0f6a6c;
+  --pf-t--global--dark--color--brand--subtle--300: #63c9c9;
+
+  --pf-t--global--dark--text--color--link--100: #7fd4d2;
+  --pf-t--global--dark--text--color--link--200: #a9e6e5;
+}
