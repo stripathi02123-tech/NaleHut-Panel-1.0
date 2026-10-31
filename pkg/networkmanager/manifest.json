@@ -1,0 +1,43 @@
+{
+    "name": "network",
+    "conditions": [
+        {"path-exists": "/usr/share/dbus-1/system.d/org.freedesktop.NetworkManager.conf"}
+    ],
+    "menu": {
+        "index": {
+            "label": "Networking",
+            "order": 40,
+            "docs": [
+                {
+                    "label": "Managing networking bonds",
+                    "url": "https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/configuring_and_managing_networking/configuring-network-bonding_configuring-and-managing-networking#proc_configuring-a-network-bond-by-using-the-rhel-web-console_configuring-network-bonding"
+                },
+                {
+                    "label": "Managing networking teams",
+                    "url": "https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/configuring_and_managing_networking/configuring-network-teaming_configuring-and-managing-networking#proc_configuring-a-network-team-by-using-the-rhel-web-console_configuring-network-teaming"
+                },
+                {
+                    "label": "Managing networking bridges",
+                    "url": "https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/configuring_and_managing_networking/configuring-a-network-bridge_configuring-and-managing-networking#proc_configuring-a-network-bridge-by-using-the-rhel-web-console_configuring-a-network-bridge"
+                },
+                {
+                    "label": "Managing VLANs",
+                    "url": "https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/configuring_and_managing_networking/configuring-vlan-tagging_configuring-and-managing-networking#proc_configuring-vlan-tagging-by-using-the-rhel-web-console_configuring-vlan-tagging"
+                },
+                {
+                    "label": "Managing firewall",
+                    "url": "https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/configuring_firewalls_and_packet_filters/using-and-configuring-firewalld_firewall-packet-filters#enabling-services-on-firewall-using-the-web-console_controlling-network-traffic-using-firewalld"
+                }
+            ],
+            "keywords": [
+                {
+                    "matches": ["network", "interface", "bridge", "vlan", "bond", "team", "port", "mac", "ipv4", "ipv6"]
+                },
+                {
+                    "matches": ["firewall", "firewalld", "zone", "tcp", "udp"],
+                    "goto": "/network/firewall"
+                }
+            ]
+        }
+    }
+}

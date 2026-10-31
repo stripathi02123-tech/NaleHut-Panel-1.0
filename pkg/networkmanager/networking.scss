@@ -1,0 +1,271 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
+@use "ct-card";
+@use "page";
+@use "global-variables" as *;
+
+#firewall,
+#network-page {
+  .pf-v6-c-card {
+    @extend .ct-card;
+  }
+}
+
+#networking, #network-interface {
+  .pf-v6-l-gallery {
+    --pf-v6-l-gallery--GridTemplateColumns: 1fr;
+  }
+}
+
+// General networking page overview
+.network-page {
+  .cockpit-log-panel {
+    max-inline-size: 100vw;
+  }
+}
+
+.network-number-field {
+  inline-size: 4em;
+}
+
+.network-graph {
+  block-size: 180px;
+}
+
+.pf-v6-c-page__main-breadcrumb + .networking-graphs {
+  // Remove the top padding when following a breadcrumb
+  padding-block-start: 0;
+}
+
+// Constrain widths of networking headers (on both the main page and in network-interface-members)
+.network-interface-details {
+  &-title {
+    display: grid;
+    grid-auto-flow: column;
+    gap: var(--pf-t--global--spacer--md);
+  }
+
+  &-delete {
+    margin-inline-end: var(--pf-t--global--spacer--lg);
+  }
+}
+
+#networking-interfaces, #networking-unmanaged-interfaces {
+  th > .pf-m-link {
+    // Preserve the same baseline as other elements, so items align
+    display: inline;
+    // Expand the link to the container, for easier clickability
+    inline-size: 100%;
+  }
+}
+
+.network-interface-members {
+  .pf-v6-c-switch {
+    margin-inline-end: var(--pf-t--global--spacer--md);
+  }
+
+  .pf-v6-c-table tbody > tr > * {
+    vertical-align: middle;
+  }
+
+  .btn-group {
+    padding-block: 0.5rem;
+  }
+}
+
+// If the button is not the first item in the DescriptionListDescription add left spacing
+.network-interface-settings dd button:not(:first-child) {
+  margin-inline-start: var(--pf-t--global--spacer--sm);
+}
+
+// The modal body, by default, overflows to accommodate extra content. This is
+// normally good. However, it also can trim things that flow outside, such as
+// the focus ring of the MTU custom input. Since we know the modal won't have
+// much vertical content, we can disable the overflow to let the focus ring be
+// fully visible. (Otherwise the bottommost pixels are removed.)
+#network-mtu-settings-dialog .pf-v6-c-modal-box__body {
+  overflow: visible;
+}
+
+// Use a grid to lay out elements. This could've been a flex, but a grid lets
+// us size elements from the parent element instead of having to specify
+// individual elements
+#network-mtu-settings-custom + .pf-v6-c-radio__label {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: baseline;
+  gap: var(--pf-t--global--spacer--md);
+}
+
+// Set the width of the input element; with a little extra space
+.mtu-label-input > input {
+  inline-size: 7ch;
+  font-variant: tabular-nums;
+}
+
+.pf-v6-l-flex > .network-ip-settings-method {
+  inline-size: 12rem;
+}
+
+#network-ip-settings-body {
+  .pf-v6-c-form__label {
+    // Don't allow labels to wrap
+    white-space: nowrap;
+  }
+
+  .remove-button-group {
+    // Move 'Remove' button the the end of the row
+    grid-column: -1;
+    // Move 'Remove' button to the bottom of the line so as to align with the other form fields
+    display: flex;
+    flex-direction: row;
+    align-items: flex-end;
+
+    button {
+      margin: var(--pf-t--global--spacer--xs);
+    }
+  }
+}
+
+// use same spacing as spacing between card title and switch
+#networking-firewall-summary .pf-v6-c-switch {
+  --pf-v6-c-switch--ColumnGap: var(--pf-t--global--spacer--md);
+}
+
+/********** Firewall section **********/
+
+#add-services-dialog {
+  .service-list {
+    border: 1px solid var(--pf-v6-c-data-list--BorderBlockStartColor);
+    border-radius: var(--pf-t--global--border--radius--small);
+    block-size: 30rem;
+    // full height minus UI, for mobile and small desktops
+    max-block-size: calc(100vh - 20rem);
+    overflow-y: auto;
+  }
+
+  .service-list-item-heading {
+    font-size: 1.2em;
+    margin: 0;
+  }
+
+  .service-list-item-text {
+    display: flex;
+    flex-wrap: wrap;
+  }
+
+  .service-ports {
+    opacity: 0.75;
+
+    &:first-of-type {
+      margin-inline-end: 1em;
+    }
+  }
+
+  .add-services-dialog-type {
+    display: flex;
+  }
+}
+
+#firewall {
+  block-size: 100%;
+
+  .ct-table tbody tr:first-of-type td:nth-child(2) {
+    font-weight: var(--pf-t--global--font--weight--body--bold);
+  }
+}
+
+@media screen and (max-width: $pf-v6-global--breakpoint--md) {
+  .zone-section-heading.pf-v6-c-card__header {
+    padding-inline-start: var(--pf-v6-global--spacer--md);
+  }
+}
+
+#add-zone-dialog legend {
+  color: var(--ct-color-subtle-copy);
+  font-size: var(--pf-t--global--font--size--sm);
+}
+
+.add-zone-zones legend {
+  line-height: 3;
+}
+
+#add-zone-dialog .add-zone-zones .pf-v6-c-radio__label {
+  text-transform: capitalize;
+}
+
+/* Move firewalld zones higher in z-index (so lines can go behind) */
+.add-zone-zones-firewalld {
+  input {
+    position: relative;
+    z-index: 2;
+  }
+
+  > label {
+    /* FIXME: Add lines behind the radio buttons */
+    &::after {
+      border-block-end: 1px solid #d1d1d1;
+      content: "";
+    }
+
+    /* Start line at the midpoint for the first radio */
+    &:first-of-type::after {
+      inset-inline-start: 50%;
+    }
+
+    /* End line at the midpoint for the last radio */
+    &:last-of-type::after {
+      inset-inline-end: 50%;
+    }
+  }
+}
+
+/* Display labels below buttons */
+.add-zone-zones-firewalld, .add-zone-zones-custom {
+  > label.radio {
+    display: inline-flex;
+  }
+}
+
+#add-zone-description-readonly {
+  padding-block: 0.5rem 0;
+  padding-inline: 0;
+  color: var(--ct-color-subtle-copy);
+}
+
+#add-zone-services-readonly legend {
+  padding: 0;
+  line-height: 1;
+}
+
+// Animation for Firewall's add service dialog,
+// as a sudden transition would be (otherwise) too jarring
+@keyframes error-slide-down {
+  0% {
+    line-height: 0;
+    block-size: 0;
+    opacity: 0;
+    overflow: hidden;
+  }
+
+  100% {
+    line-height: inherit;
+    block-size: auto;
+    opacity: 1;
+  }
+}
+
+// Remove the default top padding from the toolbar
+.filter-services-toolbar {
+  padding-block-start: 0;
+}
+
+// HACK: MenuToggle has inline-block by default which makes it not appear under
+// the entry above
+@media screen and (max-width: $pf-v6-global--breakpoint--sm) {
+  .pf-v6-c-table__td .pf-v6-c-menu-toggle.pf-m-plain {
+    display: inline-flex;
+    align-items: flex-start;
+  }
+}
+
+/* End Firewall specific CSS */
