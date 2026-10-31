@@ -1,0 +1,23 @@
+#!/usr/bin/python3 -cimport os, sys; os.execv(os.path.dirname(sys.argv[1]) + "/../common/pywrap", sys.argv)
+import os
+import unittest
+
+import testlib
+
+
+class NoTestRetryExample(unittest.TestCase):
+
+    def testFail(self):
+        if os.environ.get('TEST_FAILURES'):
+            self.assertFalse(True)  # ruff: ignore[boolean-positional-value-in-call]
+
+    @testlib.no_retry_when_changed
+    def testNoRetry(self):
+        self.assertTrue(True)  # ruff: ignore[boolean-positional-value-in-call]
+
+    def testBasic(self):
+        self.assertTrue(True)  # ruff: ignore[boolean-positional-value-in-call]
+
+
+if __name__ == '__main__':
+    testlib.test_main()
