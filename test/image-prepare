@@ -1,0 +1,293 @@
+#!/usr/bin/python3 -cimport os, sys; os.execv(os.path.dirname(sys.argv[1]) + "/common/pywrap", sys.argv)
+# Build and run a bots/image-customize command to prepare a VM for testing Cockpit.
+#
+# Copyright (C) 2022 Red Hat, Inc.
+# SPDX-License-Identifier: LGPL-2.1-or-later
+
+
+import argparse
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
+
+from lib import testmap
+from lib.constants import DEFAULT_IMAGE
+from machine.machine_core import machine_virtual
+
+BASE_DIR = os.path.realpath(f'{__file__}/../..')
+TEST_DIR = f'{BASE_DIR}/test'
+BOTS_DIR = f'{BASE_DIR}/bots'
+
+BUILD_VM_MEMORY_MB = 4096
+
+
+@contextmanager
+def create_machine(image: str) -> Iterator[machine_virtual.VirtMachine]:
+    subprocess.check_call([os.path.join(BOTS_DIR, "image-download"), image])
+    network = machine_virtual.VirtNetwork(image=image)
+    machine = machine_virtual.VirtMachine(image=image, networking=network.host(restrict=True),
+                                          memory_mb=BUILD_VM_MEMORY_MB)
+    try:
+        machine.boot()
+        yield machine
+    finally:
+        machine.stop()
+
+
+def build_rpms(
+    dist_tars: list[str], machine: machine_virtual.VirtMachine, *, verbose: bool, quick: bool
+) -> list[str]:
+    """build RPMs from a tarball in an machine
+
+    Return local rpm path list.
+    """
+    machine.upload(dist_tars, "/var/tmp/")
+    main_tar = os.path.join("/var/tmp", os.path.basename(dist_tars[0]))
+
+    # build srpm
+    machine.execute(fr"""
+        su builder -c 'rpmbuild --define "_topdir /var/tmp/build" -ts "{main_tar}"'
+    """)
+
+    # build rpms
+    mock_opts = ("--verbose" if verbose else "") + (" --nocheck" if quick else "")
+    machine.execute(fr"""
+        su builder -c 'mock --no-clean --disablerepo=* --offline \
+                            --resultdir /var/tmp/build {mock_opts} \
+                            --rebuild /var/tmp/build/SRPMS/*.src.rpm'
+    """, timeout=1800)
+
+    # download rpms
+    vm_rpms = machine.execute("find /var/tmp/build -name '*.rpm' -not -name '*.src.rpm'").strip().split()
+
+    destdir = os.path.abspath("tmp/rpms")
+    if os.path.exists(destdir):
+        shutil.rmtree(destdir)
+    os.makedirs(destdir)
+
+    rpms: list[str] = []
+    for rpm in vm_rpms:
+        machine.download(rpm, destdir)
+        rpms.append(os.path.join(destdir, os.path.basename(rpm)))
+    return rpms
+
+
+#
+# Helper functions to build image-customize options for various steps
+#
+
+def build_install_package(dist_tars: list[str], image: str, *, quick: bool) -> list[str]:
+    """Default rpm/deb/arch package build/install"""
+
+    # our images have distro cockpit packages pre-installed, remove them
+    args = ["--run-command"]
+    if 'debian' in image or 'ubuntu' in image:
+        # set up pbuilder hook to make install-tests
+        cmd = """
+        set -ex
+        dpkg --purge cockpit cockpit-ws cockpit-bridge cockpit-system
+        mkdir -p /var/tmp/tests
+        echo 'HOOKDIR="/etc/pbuilder-hooks"' >> /etc/pbuilderrc
+        echo 'BINDMOUNTS="/var/tmp/tests"' >> /etc/pbuilderrc
+        """
+        args.append(cmd)
+        args += ["--upload", os.path.join(TEST_DIR, "pbuilder-hooks") + ":/etc/"]
+    else:
+        # subscription-manager-cockpit needs these, thus --nodeps
+        args.append(r"""
+            if rpm -q cockpit-ws >/dev/null 2>&1
+                then rpm --erase --nodeps --verbose cockpit cockpit-ws cockpit-bridge cockpit-system
+            fi
+        """)
+
+    # first in dist_tars is the main release; upload additional ones
+    for extra_tar in dist_tars[1:]:
+        args += ["--upload", extra_tar + ":/var/tmp/"]
+    args += ["--build", dist_tars[0]]
+
+    # install the playground
+    args += ["--upload", os.path.join(BASE_DIR, "dist/playground") + ":/usr/local/share/cockpit/"]
+
+    # install mock pam module; we don't want to ship it as package, so fish it out of the build root
+    args.append("--run-command")
+    if 'debian' in image or 'ubuntu' in image:
+        args.append(r"find /var/tmp/tests -name mock-pam-conv-mod.so -exec cp {} /lib/x86_64-linux-gnu/security \;")
+    elif 'arch' in image:
+        args.append(r"find /var/lib/archbuild -name mock-pam-conv-mod.so -exec cp {} /usr/lib/security/ \;")
+    else:
+        args.append(r"find /var/lib/mock -name mock-pam-conv-mod.so -exec cp {} /usr/lib64/security/ \;")
+
+    if not quick and ('debian' in image or 'ubuntu' in image):
+        args.append("--run-command")
+        suppress = {'initial-upload-closes-no-bugs', 'newer-standards-version'}
+        # older OSes don't yet know about watch format v5
+        if image in ["debian-trixie"]:
+            suppress.add("missing-debian-watch-file-standard")
+
+        # HACK: Older lintian does not know about woff-font-in-wrong-dir and
+        # you cannot suppress unknown tags. So instead we suppress the no
+        # unknown tags lintian rule.
+        if image in ["debian-trixie", "ubuntu-2604"]:
+            suppress.add("alien-tag")
+
+        args.append(fr"""
+            cd /var/tmp/build;
+            runuser -u admin -- \
+                env TMPDIR=/var/tmp lintian --fail-on warning,error \
+                --tag-display-limit 0 --display-info \
+                --suppress-tags {','.join(suppress)} \
+                cockpit*.changes >&2""")
+    return args
+
+
+def build_install_ostree(dist_tars: list[str], image: str, *, verbose: bool, quick: bool) -> list[str]:
+    """Special treatment of build/install on CoreOS
+
+    OSTree image can't build packages, build them on corresponding OSes and
+    install them into the OSTree and the cockpit/ws container.
+    """
+    with create_machine(testmap.get_build_image(image)) as machine:
+        rpms = build_rpms(dist_tars, machine, verbose=verbose, quick=quick)
+    args: list[str] = []
+    for rpm in rpms:
+        args += ["--upload", f"{rpm}:/var/tmp/"]
+    args += [
+        "--upload", os.path.join(BASE_DIR, "containers") + ":/var/tmp/",
+        "--script", os.path.join(TEST_DIR, "ostree.install"),
+        "--upload", os.path.join(BASE_DIR, "dist/playground") + ":/usr/local/share/cockpit/"]
+    return args
+
+
+def build_install_bootc(dist_tars: list[str], image: str, *, verbose: bool, quick: bool) -> list[str]:
+    """Special treatment of build/install on Bootc
+
+    bootc image can't build packages, build them on corresponding OSes, build a new bootc
+    image with the rpms, and deploy it.
+    """
+    with create_machine(testmap.get_build_image(image)) as machine:
+        rpms = build_rpms(dist_tars, machine, verbose=verbose, quick=quick)
+    args = ["--run-command", "mkdir -p /var/tmp/rpms"]
+    for rpm in rpms:
+        if not any(r in rpm for r in [".src", "debug", "packagekit"]):
+            args += ["--upload", f"{rpm}:/var/tmp/rpms/"]
+    args += [
+        "--upload", os.path.join(BASE_DIR, "dist/playground") + ":/var/tmp/",
+        "--script", os.path.join(TEST_DIR, "bootc.install"),
+    ]
+    return args
+
+
+def build_install_container(dist_tars: list[str], image: str, *, verbose: bool, quick: bool) -> list[str]:
+    """Build VM with cockpit/ws container
+
+    This can test an image with beibooting from a cockpit/ws container, without
+    any installed cockpit packages.
+    """
+    builder = testmap.get_build_image_for_ws_container_inside_of(image)
+    if builder is None:
+        raise ValueError(f"Don't know how to build a container for {image}")
+
+    with create_machine(builder) as machine:
+        rpms = build_rpms(dist_tars, machine, verbose=verbose, quick=quick)
+    args: list[str] = []
+    for rpm in rpms:
+        args += ["--upload", f"{rpm}:/var/tmp/"]
+    args += [
+        # copy the playground where ws-container.install expects it
+        "--run-command", "mkdir -p /var/tmp/install/usr/share/cockpit/",
+        "--upload", os.path.join(BASE_DIR, "dist/playground") + ":/var/tmp/install/usr/share/cockpit/",
+        # remove preinstalled rpms
+        "--run-command", "dnf -C remove -y cockpit-bridge cockpit-ws",
+        "--upload", os.path.join(BASE_DIR, "containers") + ":/var/tmp/",
+        "--script", os.path.join(TEST_DIR, "ws-container.install"),
+    ]
+    return args
+
+
+def validate_packages() -> list[str]:
+    """Post-install package checks"""
+
+    # check for files that are shipped by more than one RPM
+    return ["--run-command",
+            """set -eu
+                fail=
+                for f in $(find $(rpm -ql $(rpm -qa '*cockpit*') | sort | uniq -d) -maxdepth 0 -type f); do
+                    # -debugsource overlap is legit
+                    [ "${f#/usr/src/debug}" = "$f" ] || continue
+                    echo "ERROR: $f is shipped by multiple packages: $(rpm -qf $f)" >&2
+                    fail=1
+                done
+                [ -z "${fail}" ] || exit 1
+            """]
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description='Prepare testing environment, download images and build and install cockpit',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('-e', '--env', metavar='NAME=VAL', action='append',
+                        help="Add a line to /etc/environment")
+    parser.add_argument('-d', '--debug', action='append_const', dest='env', const='COCKPIT_DEBUG=all',
+                        help="Equivalent to --env=COCKPIT_DEBUG=all")
+    parser.add_argument('-v', '--verbose', action='store_true', help='Display verbose progress details')
+    parser.add_argument('-q', '--quick', action='store_true', help='Skip unit tests to build faster')
+    parser.add_argument('-o', '--overlay', action='store_true',
+                        help='Install into existing test/image/ overlay instead of from pristine base image')
+    parser.add_argument('--network', action='store_true',
+                        help='Enable internet access (only for local experiments, not for production!)')
+    parser.add_argument('--container', action='store_true', help='Install cockpit/ws container instead of rpms')
+    parser.add_argument('image', nargs='?', default=DEFAULT_IMAGE, help='The image to use')
+    args = parser.parse_args()
+
+    customize = [os.path.join(BOTS_DIR, "image-customize")]
+    if not args.network:
+        customize.append("--no-network")
+    if not args.overlay:
+        customize.append("--fresh")
+    if args.verbose:
+        customize.append("--verbose")
+    if args.quick:
+        customize.append("--quick")
+
+    # esbuild likes to use a lot of memory.
+    customize += ["--memory-mb", str(BUILD_VM_MEMORY_MB)]
+
+    dist_tars = subprocess.check_output([f'{BASE_DIR}/tools/make-dist'], text=True).strip().splitlines()
+
+    # Don't rebuild bundle if built with NODE_ENV=development
+    if os.environ.get('NODE_ENV') == 'development':
+        customize += ["--build-options", '--define "rebuild_bundle 0"']
+
+    if args.image == "fedora-coreos":
+        customize += build_install_ostree(dist_tars, args.image, verbose=args.verbose, quick=args.quick)
+    elif args.image.endswith("-bootc"):
+        customize += build_install_bootc(dist_tars, args.image, verbose=args.verbose, quick=args.quick)
+    elif args.container:
+        customize += build_install_container(dist_tars, args.image, verbose=args.verbose, quick=args.quick)
+    else:
+        customize += build_install_package(dist_tars, args.image, quick=args.quick)
+
+    if not args.quick:
+        customize += validate_packages()
+
+    # post build/install test preparation
+    customize += ["--script", os.path.join(TEST_DIR, "vm.install")]
+
+    if args.env:
+        customize += ['--run-command', r'printf "%s\n" >>/etc/environment ' + shlex.join(args.env)]
+
+    customize.append(args.image)
+
+    # show final command for easy copy&paste reproduction/debugging
+    if args.verbose:
+        print(' '.join([shlex.quote(arg) for arg in customize]))
+
+    return subprocess.call(customize)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

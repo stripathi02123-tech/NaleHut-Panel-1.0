@@ -1,0 +1,48 @@
+#!/bin/bash
+# update cockpit packages and install scripts in the container
+set -eu
+shopt -s failglob
+
+# keep in sync with containers/ws/install.sh
+PACKAGES="
+kdump
+networkmanager
+packagekit
+selinux
+sosreport
+storaged
+system
+"
+
+# Mount the container image so we can check some things
+ws_mount=$(podman image mount quay.io/cockpit/ws)
+
+# Verify that we only install rpms from the correct dist
+ws_dist=".fc$(. "${ws_mount}/etc/os-release" && echo "${VERSION_ID}")"
+for pkg in ws bridge $PACKAGES; do
+    rpm2cpio /var/tmp/cockpit-${pkg}-*${ws_dist}.*.rpm | cpio -i --make-directories --directory=/var/tmp/install
+done
+
+# Verify Python version matches
+# basename with a suffix argument fails if the glob expands to more than one match
+ws_pylib="$(basename "${ws_mount}"/usr/lib/python3.* '')"
+if ! [ -d "/var/tmp/install/usr/lib/${ws_pylib}" ]; then
+    echo "ERROR: RPMs have different Python version than container (expected ${ws_pylib})" >&2
+    exit 1
+fi
+
+# Copy those files into the container (we don't have RPM inside)
+podman run --name build-cockpit -i \
+    -v /var/tmp/:/run/build:Z \
+    quay.io/cockpit/ws sh -exc '
+cp -a /run/build/install/* /
+cp /run/build/containers/ws/label-* /run/build/containers/ws/default-bastion.conf /run/build/containers/ws/cockpit-auth-ssh-key /container/
+# done in containers/ws/install.sh; this can be removed once that change is in our VM images
+rm -f /usr/libexec/cockpit-session
+'
+podman commit --change CMD=/container/label-run build-cockpit localhost/cockpit/ws
+podman rm -f build-cockpit
+
+# move original quay.io image away, to make sure that our tests use the updated one
+podman tag quay.io/cockpit/ws:latest quay.io/cockpit/original-ws:released
+podman rmi quay.io/cockpit/ws:latest
