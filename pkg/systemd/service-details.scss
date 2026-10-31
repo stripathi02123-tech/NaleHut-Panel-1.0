@@ -1,0 +1,62 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
+@use "ct-card";
+@use "../lib/journal.css";
+@use "_global-variables.scss";
+
+#service-details .pf-v6-c-card {
+  @extend .ct-card;
+}
+
+.comma-list {
+  display: inline;
+  list-style: none;
+  padding-inline-start: 0;
+}
+
+.comma-list li {
+  display: inline-block;
+}
+
+.comma-list li:not(:last-child)::after {
+  content: ",";
+  margin-inline-end: 0.5em;
+}
+
+/* Rely on flex for spacing only */
+.service-top-panel button.pf-v6-c-menu-toggle {
+  padding-inline-start: 0;
+}
+
+.action-button {
+  margin-inline-start: 2rem;
+}
+
+.status-icon::before {
+  color: inherit;
+}
+
+.status-icon {
+  margin-inline-end: 0.5rem;
+  color: var(--pf-t--global--icon--color--subtle);
+}
+
+// REVIEW @Venefilyn: Green = good/success; Running or enabled is a status so
+// we should use something that is better suited for informational stuff -- like purple
+.status-running .status-icon,
+.status-enabled .status-icon {
+  color: var(--pf-t--global--border--color--status--success--default);
+}
+
+.status-failed .status-icon,
+.status-failed .status {
+  color: var(--pf-t--global--icon--color--status--danger--default);
+}
+
+.side-note {
+  color: var(--pf-t--global--icon--color--subtle);
+  padding-inline-start: 1em;
+}
+
+.font-xs {
+  font-size: var(--pf-t--global--font--size--xs);
+}

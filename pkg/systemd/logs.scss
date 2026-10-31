@@ -1,0 +1,139 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
+@use "../lib/table.css";
+@use "../lib/journal.css";
+@use "./system-global.scss";
+@use "global-variables.scss";
+@use "@patternfly/patternfly/utilities/Flex/flex.scss";
+
+// https://github.com/patternfly/patternfly-react/issues/5993
+.pf-v6-c-popover.pf-m-width-auto {
+  --pf-v6-c-popover--MaxWidth: min(300px, 90%);
+}
+
+.journal-filters {
+  grid-template-rows: auto 1fr;
+
+  .cockpit-log-panel {
+    border: none;
+  }
+
+  .pf-v6-c-page__main {
+    // Constrain page to viewport height, so journal can overflow
+    max-block-size: 100vh;
+  }
+
+  // Static width for the service selector as it likes to resize a lot while loading
+  .journal-filters-identifier-menu ul.pf-v6-c-select__menu {
+    inline-size: 10rem;
+  }
+
+  // Long names without spaces do not wrap; triggers overflow and overlaps with check icon
+  .journal-filters-identifier-menu .pf-v6-c-select__menu-item {
+    white-space: normal;
+  }
+
+  // PatternFly added align-self oddly; this shouldn't be used in general, except for one-offs. It caused a rendering issue on the way we use the toolbar components in the logs page.
+  .pf-v6-c-toolbar .pf-v6-c-toolbar__item {
+    align-self: unset;
+  }
+}
+
+.log-details {
+  .pf-v6-l-gallery {
+    --pf-v6-l-gallery--GridTemplateColumns: 1fr;
+  }
+
+  .pf-v6-c-page__main-breadcrumb {
+    padding: var(--pf-t--global--spacer--md);
+  }
+
+  .pf-v6-c-card__title {
+    word-break: break-all;
+    white-space: pre-wrap !important;
+  }
+
+  .pf-v6-l-split {
+    padding-block-end: var(--pf-t--global--spacer--md);
+    align-items: center;
+  }
+
+  .pf-v6-c-description-list {
+    --pf-v6-c-description-list--m-horizontal__term--width: 25ch;
+  }
+
+  // For abrt log details: add some gutter between the tabs and their content
+  .pf-v6-c-tab-content > .pf-v6-c-description-list {
+    padding-block-start: var(--pf-t--global--spacer--md);
+  }
+
+  // Let the description list set the color, not the wrapper accordion component
+  .pf-v6-c-accordion__expanded-content {
+    color: unset;
+  }
+}
+
+.journal-filters-box {
+  flex: auto;
+
+  .panel-heading {
+    position: sticky;
+    inset-block-start: 0;
+    color: var(--pf-t--global--text--color--regular);
+    background-color: var(--pf-t--global--background--color--primary--default);
+    border: none;
+    font-size: var(--pf-t--global--font--size--heading--h2);
+    font-family: var(--pf-t--global--font--family--heading);
+    font-weight: var(--pf-t--global--font--weight--heading--default);
+    padding-block: var(--pf-t--global--spacer--lg) var(--pf-t--global--spacer--sm);
+    padding-inline: var(--pf-t--global--spacer--lg);
+    font-variant: none; /* Don't use tabular styling */
+  }
+}
+
+.pf-v6-theme-dark {
+  .journal-filters-box .panel-heading {
+    color: var(--pf-t--global--text--color--subtle);
+  }
+}
+
+/* Set min width for services in the journal view */
+.journal-filters .cockpit-logline {
+  --log-service-min: 8rem;
+}
+
+.pf-v6-c-toolbar {
+  // Make toolbar stretch to all the available space and wrap up to two lines
+  .pf-v6-c-toolbar__group:nth-child(3) {
+    flex-grow: 1;
+  }
+
+  // Make text filter stretch to all the available space
+  .pf-v6-c-toolbar__item.text-search, .journal-filters-grep {
+    flex-grow: 1;
+  }
+
+  // Hide filters from advanced search dropdown entries which already exist in the toolbar
+  .journal-filters-grep .pf-v6-c-panel__main-body {
+    .pf-v6-c-form__group:nth-child(5), .pf-v6-c-form__group:nth-child(6) {
+      display: none;
+    }
+  }
+
+  .pf-v6-c-toolbar__expandable-content.pf-m-expanded .pf-v6-c-divider {
+    display: none;
+  }
+
+  // FIXME: When porting the selects to the PF5 select implementation drop this
+  .pf-v6-c-toolbar__item {
+    align-self: center;
+  }
+}
+
+.log-text-filter-popover-button {
+    padding: unset;
+    padding-inline-start: var(--pf-t--global--spacer--sm);
+
+    svg {
+      color: var(--pf-t--global--icon--color--regular);
+    }
+}

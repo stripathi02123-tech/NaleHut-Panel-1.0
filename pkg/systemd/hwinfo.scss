@@ -1,0 +1,31 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
+@use "ct-card";
+@use "page";
+
+#hwinfo {
+  /* Style the list cards as ct-cards */
+  .pf-v6-c-page__main-section .pf-v6-c-card {
+    @extend .ct-card;
+  }
+
+  .pf-v6-l-gallery {
+    --pf-v6-l-gallery--GridTemplateColumns: 1fr;
+  }
+}
+
+#hwinfo-system-info-list {
+  /* When the flex wraps make have the same gap as description list items have between them */
+  row-gap: 1rem;
+}
+
+.nosmt-read-more-link {
+  display: block;
+}
+
+.nosmt-heading {
+  font-weight: var(--pf-t--global--font--weight--heading);
+}
+
+.cpu-mitigations-dialog-info {
+  margin-block-end: var(--pf-t--global--spacer--md);
+}

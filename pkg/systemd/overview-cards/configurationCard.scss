@@ -1,0 +1,9 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
+#system_information_hostname_text + span {
+  font: inherit;
+  margin-inline-start: 0.5em;
+}
+
+.system-configuration .pf-v6-c-button.pf-m-link:disabled {
+  color: inherit;
+}

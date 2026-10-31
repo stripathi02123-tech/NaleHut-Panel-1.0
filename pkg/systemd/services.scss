@@ -1,0 +1,99 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
+@use "./system-global.scss";
+@use "global-variables" as *;
+
+// The service list lacks a top border.
+// However, the toolbar also lacks a border and is sticky, so add a bottom
+// border to the toolbar to separate the toolbar and list.
+.pf-m-grid-lg.pf-v6-c-table tbody:where(.pf-v6-c-table__tbody):first-of-type {
+  border-block-start: var(--pf-v6-c-table__tbody--responsive--border-width--base) solid var(--pf-v6-c-table--responsive--BorderColor);
+}
+
+// Magic pixie dust to make the list a bit faster and more furious
+.services-list tbody {
+  // Skip a lot of computations
+  contain: content;
+}
+
+.service-unit-failed {
+  background-color: var(--ct-color-list-critical-bg);
+
+  .service-unit-status {
+    color: var(--ct-color-list-critical-alert-text);
+  }
+}
+
+.service-unit-status {
+  white-space: nowrap;
+
+  &-failed {
+    color: red;
+  }
+}
+
+.service-unit-file-state {
+  display: inline-block;
+  min-inline-size: 5rem;
+  text-align: center;
+}
+
+.service-unit-file-state:not(.pf-v6-c-badge) {
+  text-align: center;
+  opacity: 0.8;
+}
+
+// Add some spacing between the tab label and the icon
+.pf-v6-c-nav__link > .ct-exclamation-circle {
+  margin-inline-start: 0.5rem;
+}
+// Add some spacing between the icon and the status string in the list
+.service-unit-status-failed > .ct-exclamation-circle {
+  margin-inline-end: 0.5rem;
+}
+
+.service-unit-first-column {
+  min-inline-size: 20rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(5rem, 25rem));
+  gap: var(--pf-t--global--spacer--sm);
+
+  .service-unit-description {
+    font-weight: var(--pf-t--global--font--weight--body--bold);
+  }
+}
+
+// FIXME @Venefilyn: Long-named services causes the cell to exceed its length
+// as it won't wrap correctly. It does seem like (inline-)flex itself cause the
+// issues. For now we go to how it was in PF5 and set it to display: block.
+#services .service-unit-id {
+  --pf-v6-c-button--Display: block;
+}
+
+.service-unit-triggers {
+  min-inline-size: 20ch;
+}
+
+/* Ensure there's spacing between text and icons in the services switcher (failed units) */
+.services-header .pf-v6-c-button__text {
+  align-items: center;
+  display: flex;
+  gap: var(--pf-t--global--spacer--xs);
+}
+
+.pf-v6-c-table .service-unit-second-column {
+  --pf-v6-c-table--cell--Width: 20%;
+}
+
+// Don't show labels from mobile mode
+.pf-v6-c-table [data-label]::before {
+  display: none;
+}
+
+.pf-v6-c-table [data-label] {
+  display: revert;
+}
+
+// FIXME: When porting the selects to the PF5 select implementation drop this
+.pf-v6-c-toolbar__item {
+  align-self: center;
+}
