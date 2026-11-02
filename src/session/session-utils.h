@@ -1,0 +1,65 @@
+/*
+ * Copyright (C) 2013 Red Hat, Inc.
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ */
+
+#pragma once
+
+#include "config.h"
+
+#include <assert.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <err.h>
+#include <stdio.h>
+#include <stdint.h>
+#include <stdnoreturn.h>
+#include <string.h>
+#include <pwd.h>
+#include <grp.h>
+#include <errno.h>
+#include <unistd.h>
+#include <signal.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+
+#include "common/cockpitauthorize.h"
+#include "common/cockpitmemory.h"
+
+#define DEBUG_SESSION 0
+
+#if DEBUG_SESSION
+#define debug(fmt, ...) (fprintf (stderr, "%s: " fmt "\n", program_name, ##__VA_ARGS__))
+#else
+#define debug(...)
+#endif
+
+#define EX 127
+
+extern const char *program_name;
+extern struct passwd *pwd;
+extern int want_session;
+extern pid_t child;
+
+void build_string (char **buf, size_t *size, const char *str, size_t len);
+void authorize_logger (const char *data);
+void utmp_log (int login, const char *rhost, FILE *messages);
+void btmp_log (const char *username, const char *rhost);
+
+char* read_authorize_response (const char *what);
+char* get_authorize_key (const char *json, const char *key, bool required);
+void write_authorize_begin (void);
+void write_control_string (const char *field, const char *str);
+void write_control_bool (const char *field, bool val);
+void write_control_end (void);
+
+__attribute__((__noreturn__)) void exit_init_problem (const char *problem, const char *message);
+
+int
+spawn_and_wait (const char **argv,
+                const char **envp,
+                const int *remap_fds,
+                int n_remap_fds,
+                uid_t uid,
+                gid_t gid);

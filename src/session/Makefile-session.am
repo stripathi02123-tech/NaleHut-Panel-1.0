@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# -----------------------------------------------------------------------------
+# cockpit-session
+
+libexec_PROGRAMS += cockpit-session
+
+cockpit_session_LDADD = \
+	$(libcockpit_common_a_LIBS) \
+	$(krb5_LIBS) \
+	$(libsystemd_LIBS) \
+	-lpam \
+	$(NULL)
+
+cockpit_session_SOURCES = \
+	src/session/client-certificate.h \
+	src/session/client-certificate.c \
+	src/session/client-certificate.h \
+	src/session/session-utils.c \
+	src/session/session-utils.h \
+	src/session/session.c \
+	$(NULL)

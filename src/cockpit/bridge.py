@@ -1,0 +1,350 @@
+#
+# Copyright (C) 2022 Red Hat, Inc.
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+
+import argparse
+import asyncio
+import contextlib
+import grp
+import json
+import logging
+import os
+import pwd
+import shlex
+import socket
+import stat
+import subprocess
+import sys
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Type
+
+from cockpit._vendor.ferny import interaction_client
+from cockpit._vendor.systemd_ctypes import bus, run_async
+
+from . import polyfills
+from ._version import __version__
+from .channel import ChannelRoutingRule
+from .channels import CHANNEL_TYPES
+from .config import Config, Environment
+from .internal_endpoints import EXPORTS
+from .jsonutil import JsonError, JsonObject, JsonValue, get_dict
+from .packages import BridgeConfig, Packages, PackagesListener
+from .peer import PeersRoutingRule
+from .remote import HostRoutingRule
+from .router import Router
+from .superuser import SuperuserRoutingRule
+from .transports import StdioTransport
+
+logger = logging.getLogger(__name__)
+
+
+class InternalBus:
+    exportees: List[bus.Slot]
+
+    def __init__(self, exports: Iterable[Tuple[str, Type[bus.BaseObject]]]):
+        client_socket, server_socket = socket.socketpair()
+        self.client = bus.Bus.new(fd=client_socket.detach())
+        self.server = bus.Bus.new(fd=server_socket.detach(), server=True)
+        self.exportees = [self.server.add_object(path, cls()) for path, cls in exports]
+
+    def export(self, path: str, obj: bus.BaseObject) -> None:
+        self.exportees.append(self.server.add_object(path, obj))
+
+
+class Bridge(Router, PackagesListener):
+    channels: ChannelRoutingRule
+    internal_bus: InternalBus
+    packages: Optional[Packages]
+    bridge_configs: Sequence[BridgeConfig]
+    args: argparse.Namespace
+
+    def __init__(self, args: argparse.Namespace):
+        self.internal_bus = InternalBus(EXPORTS)
+        self.bridge_configs = []
+        self.args = args
+
+        self.superuser_rule = SuperuserRoutingRule(self, privileged=args.privileged)
+        self.internal_bus.export('/superuser', self.superuser_rule)
+
+        config = Config()
+        self.internal_bus.export('/config', config)
+        self.internal_bus.export('/environment', Environment())
+
+        self.peers_rule = PeersRoutingRule(self)
+
+        if args.beipack:
+            # Some special stuff for beipack
+            self.superuser_rule.set_configs((
+                BridgeConfig({
+                    "privileged": True,
+                    "spawn": ["sudo", "-k", "-A", "python3", "-ic", "# cockpit-bridge", "--privileged"],
+                    "environ": ["SUDO_ASKPASS=ferny-askpass"],
+                }),
+                BridgeConfig({
+                    "privileged": True,
+                    "polkit": True,
+                    "method": "StartTransientUnit",
+                    "spawn": [sys.executable, "-ic", "# cockpit-bridge", "--privileged"],
+                }),
+            ))
+            self.packages = None
+        elif args.privileged:
+            self.packages = None
+        else:
+            self.packages = Packages(self)
+            self.internal_bus.export('/packages', self.packages)
+            self.packages_loaded()
+
+        self.channels = ChannelRoutingRule(self, CHANNEL_TYPES)
+
+        session_timeout = 0
+        if not args.privileged:
+            session_timeout = config.get_u_int("Session", "IdleTimeout", 0, 240, 0) * 60
+
+        super().__init__([
+            HostRoutingRule(self),
+            self.superuser_rule,
+            self.channels,
+            self.peers_rule,
+        ], session_timeout=session_timeout)
+
+    def info(self) -> JsonObject:
+        pw = pwd.getpwuid(os.getuid())
+
+        # We want the primary group first in the list, without duplicates.
+        # This is a bit awkward because `set()` is unordered...
+        group = grp.getgrgid(pw.pw_gid).gr_name
+        groups = [group]
+        for gr in grp.getgrall():
+            if pw.pw_name in gr.gr_mem and gr.gr_name not in groups:
+                groups.append(gr.gr_name)
+
+        return {
+            'channels': self.channels.capabilities(),
+            'os_release': self.get_os_release(),
+            'user': {
+                'fullname': pw.pw_gecos,
+                'gid': pw.pw_gid,
+                'group': group,
+                'groups': groups,
+                'home': pw.pw_dir,
+                'name': pw.pw_name,
+                'shell': pw.pw_shell,
+                'uid': pw.pw_uid,
+            },
+        }
+
+    @staticmethod
+    def get_os_release() -> JsonObject:
+        try:
+            file = open('/etc/os-release', encoding='utf-8')
+        except FileNotFoundError:
+            try:
+                file = open('/usr/lib/os-release', encoding='utf-8')
+            except FileNotFoundError:
+                logger.warning("Neither /etc/os-release nor /usr/lib/os-release exists")
+                return {}
+
+        with file:
+            return parse_os_release(file.read())
+
+    def do_init(self, message: JsonObject) -> None:
+        # we're only interested in the case where this is a dict, but
+        # 'superuser' may well be `False` and that's not an error
+        with contextlib.suppress(JsonError):
+            superuser = get_dict(message, 'superuser')
+            self.superuser_rule.init(superuser)
+
+    def do_send_init(self) -> None:
+        init_args: 'dict[str, JsonValue]' = {
+            'capabilities': {'explicit-superuser': True},
+            'command': 'init',
+            'os-release': self.get_os_release(),
+            'version': 1,
+        }
+
+        if self.packages is not None:
+            init_args['packages'] = dict.fromkeys(self.packages.packages)
+
+        self.write_control(init_args)
+
+    # PackagesListener interface
+    def packages_loaded(self) -> None:
+        assert self.packages
+        bridge_configs = self.packages.get_bridge_configs()
+        if self.bridge_configs != bridge_configs:
+            self.superuser_rule.set_configs(bridge_configs)
+            self.peers_rule.set_configs(bridge_configs)
+            self.bridge_configs = bridge_configs
+
+
+async def run(args) -> None:
+    logger.debug("Hi. How are you today?")
+
+    # Unit tests require this
+    me = pwd.getpwuid(os.getuid())
+    os.environ['HOME'] = me.pw_dir
+    os.environ['SHELL'] = me.pw_shell
+    os.environ['USER'] = me.pw_name
+
+    logger.debug('Starting the router.')
+    router = Bridge(args)
+    StdioTransport(asyncio.get_running_loop(), router)
+
+    logger.debug('Startup done.  Looping until connection closes.')
+
+    try:
+        await router.communicate()
+    except (BrokenPipeError, ConnectionResetError):
+        # not unexpected if the peer doesn't hang up cleanly
+        pass
+
+
+def try_to_receive_stderr() -> None:
+    try:
+        ours, theirs = socket.socketpair()
+        with ours:
+            with theirs:
+                interaction_client.command(2, 'cockpit.send-stderr', fds=[theirs.fileno()])
+            _msg, fds, _flags, _addr = socket.recv_fds(ours, 1, 1)
+    except OSError:
+        return
+
+    try:
+        stderr_fd, = fds
+        # We're about to abruptly drop our end of the stderr socketpair that we
+        # share with the ferny agent.  ferny would normally treat that as an
+        # unexpected error. Instruct it to do a clean exit, instead.
+        interaction_client.command(2, 'ferny.end')
+        os.dup2(stderr_fd, 2)
+    finally:
+        for fd in fds:
+            os.close(fd)
+
+
+def setup_journald() -> bool:
+    # If stderr is a socket, prefer systemd-journal logging.  This covers the
+    # case we're already connected to the journal but also the case where we're
+    # talking to the ferny agent, while leaving logging to file or terminal
+    # unaffected.
+    if not stat.S_ISSOCK(os.fstat(2).st_mode):
+        # not a socket?  Don't redirect.
+        return False
+
+    try:
+        import systemd.journal  # type: ignore[import]
+    except ImportError:
+        # No python3-systemd?  Don't redirect.
+        return False
+
+    logging.root.addHandler(systemd.journal.JournalHandler())
+    return True
+
+
+def setup_logging(*, debug: bool) -> None:
+    """Setup our logger with optional filtering of modules if COCKPIT_DEBUG env is set"""
+
+    modules = os.getenv('COCKPIT_DEBUG', '')
+
+    # Either setup logging via journal or via formatted messages to stderr
+    if not setup_journald():
+        logging.basicConfig(format='%(name)s-%(levelname)s: %(message)s')
+
+    if debug or modules == 'all':
+        logging.getLogger().setLevel(level=logging.DEBUG)
+    elif modules:
+        for module in modules.split(','):
+            module = module.strip()
+            if not module:
+                continue
+
+            logging.getLogger(module).setLevel(logging.DEBUG)
+
+
+def parse_os_release(text: str) -> Dict[str, str]:
+    os_release = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        try:
+            k, v = line.split('=')
+            (v_parsed, ) = shlex.split(v)  # expect exactly one token
+        except ValueError:
+            logger.warning('Ignoring invalid line in os-release: %r', line)
+            continue
+        os_release[k] = v_parsed
+    return os_release
+
+
+def start_ssh_agent() -> None:
+    # Launch the agent so that it goes down with us on EOF; PDEATHSIG would be more robust,
+    # but it gets cleared on setgid ssh-agent, which some distros still do
+    try:
+        proc = subprocess.Popen(['ssh-agent', 'sh', '-ec', 'echo SSH_AUTH_SOCK=$SSH_AUTH_SOCK; read a'],
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, universal_newlines=True)
+        assert proc.stdout is not None
+
+        # Wait for the agent to write at least one line and look for the
+        # listener socket.  If we fail to find it, kill the agent — something
+        # went wrong.
+        for token in shlex.shlex(proc.stdout.readline(), punctuation_chars=True):
+            if token.startswith('SSH_AUTH_SOCK='):
+                os.environ['SSH_AUTH_SOCK'] = token.replace('SSH_AUTH_SOCK=', '', 1)
+                break
+        else:
+            proc.terminate()
+            proc.wait()
+
+    except FileNotFoundError:
+        logger.debug("Couldn't start ssh-agent (FileNotFoundError)")
+
+    except OSError as exc:
+        logger.warning("Could not start ssh-agent: %s", exc)
+
+
+def main(*, beipack: bool = False) -> None:
+    polyfills.install()
+
+    parser = argparse.ArgumentParser(description='cockpit-bridge is run automatically inside of a Cockpit session.')
+    parser.add_argument('--privileged', action='store_true', help='Privileged copy of the bridge')
+    parser.add_argument('--packages', action='store_true', help='Show Cockpit package information')
+    parser.add_argument('--bridges', action='store_true', help='Show Cockpit bridges information')
+    parser.add_argument('--debug', action='store_true', help='Enable debug output (very verbose)')
+    parser.add_argument('--version', action='store_true', help='Show Cockpit version information')
+    args = parser.parse_args()
+
+    # This is determined by who calls us
+    args.beipack = beipack
+
+    # If we were run with --privileged then our stderr is currently being
+    # consumed by the main bridge looking for startup-related error messages.
+    # Let's switch back to the original stderr stream, which has a side-effect
+    # of indicating that our startup is more or less complete.  Any errors
+    # after this point will land in the journal.
+    if args.privileged:
+        try_to_receive_stderr()
+
+    setup_logging(debug=args.debug)
+
+    # Special modes
+    if args.packages:
+        Packages().show()
+        return
+    elif args.version:
+        print(f'Version: {__version__}\nProtocol: 1')
+        return
+    elif args.bridges:
+        print(json.dumps([config.__dict__ for config in Packages().get_bridge_configs()], indent=2))
+        return
+
+    # The privileged bridge doesn't need ssh-agent, but the main one does
+    if 'SSH_AUTH_SOCK' not in os.environ and not args.privileged:
+        start_ssh_agent()
+
+    # asyncio.run() shim for Python 3.6 support
+    run_async(run(args), debug=args.debug)
+
+
+if __name__ == '__main__':
+    main()

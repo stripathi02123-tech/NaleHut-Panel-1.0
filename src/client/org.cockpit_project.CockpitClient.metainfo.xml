@@ -1,0 +1,69 @@
+<?xml version='1.0' encoding='utf-8'?>
+<component type="desktop-application">
+  <id>org.cockpit_project.CockpitClient</id>
+
+  <name>Cockpit Client</name>
+  <summary>Web-based server interface via ssh</summary>
+  <developer id="org.cockpit_project">
+    <name>Cockpit Project</name>
+  </developer>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LGPL-2.1-or-later</project_license>
+
+  <description>
+    <p>
+      Cockpit Client provides a graphical interface to your servers, containers, and virtual machines.  Connections are made over SSH, using the SSH configuration of the local user (including aliases, known hosts, key files, hardware tokens, etc).
+    </p>
+    <p>
+      The server needs to have Python installed, but the Cockpit webserver doesn't need to be enabled, and no extra ports need to be opened.
+    </p>
+  </description>
+
+  <screenshots>
+    <screenshot>
+      <caption>Cockpit Client login screen</caption>
+      <image>https://cockpit-project.org/images/flatpak/flatpak-screenshot-login.png</image>
+    </screenshot>
+    <screenshot type="default">
+      <caption>Cockpit overview</caption>
+      <image>https://cockpit-project.org/images/flatpak/flatpak-screenshot-overview.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Cockpit terminal</caption>
+      <image>https://cockpit-project.org/images/flatpak/flatpak-screenshot-terminal.png</image>
+    </screenshot>
+  </screenshots>
+
+  <releases>
+    <release version="@VERSION@" date="@DATE@"/>
+  </releases>
+
+  <launchable type="desktop-id">org.cockpit_project.CockpitClient.desktop</launchable>
+
+  <categories>
+    <category>Network</category>
+    <category>RemoteAccess</category>
+  </categories>
+
+  <provides>
+    <binary>cockpit-client</binary>
+  </provides>
+
+  <requires>
+    <display_length compare="ge">768</display_length>
+  </requires>
+
+  <recommends>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </recommends>
+
+  <content_rating type="oars-1.0"/>
+
+  <url type="homepage">https://cockpit-project.org/</url>
+  <url type="bugtracker">https://github.com/cockpit-project/cockpit/issues</url>
+  <url type="help">https://cockpit-project.org/documentation.html</url>
+  <url type="translate">https://translate.fedoraproject.org/projects/cockpit</url>
+  <url type="vcs-browser">https://github.com/cockpit-project/cockpit/tree/main/src/client</url>
+</component>
