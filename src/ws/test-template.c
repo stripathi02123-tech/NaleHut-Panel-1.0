@@ -1,0 +1,117 @@
+/*
+ * Copyright (C) 2014 Red Hat, Inc.
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ */
+
+#include "config.h"
+
+#include "cockpittemplate.h"
+#include "cockpitjson.h"
+
+#include "testlib/cockpittest.h"
+
+#include <string.h>
+
+typedef struct {
+    GHashTable *variables;
+} TestCase;
+
+static void
+setup (TestCase *tc,
+       gconstpointer data)
+{
+  tc->variables = g_hash_table_new (g_str_hash, g_str_equal);
+  g_hash_table_insert (tc->variables, "Scruffy", "janitor");
+  g_hash_table_insert (tc->variables, "oh", "marmalade");
+  g_hash_table_insert (tc->variables, "oh_dash", "dash-marmalade");
+  g_hash_table_insert (tc->variables, "empty", "");
+  g_hash_table_insert (tc->variables, "💩", "error");
+}
+
+static void
+teardown (TestCase *tc,
+          gconstpointer data)
+{
+  g_hash_table_destroy (tc->variables);
+}
+
+static GBytes *
+lookup_table (const char *name,
+              gpointer user_data)
+{
+  GHashTable *variables = user_data;
+  const gchar *value;
+
+  value = g_hash_table_lookup (variables, name);
+  if (!value)
+    return NULL;
+  return g_bytes_new (value, strlen (value));
+}
+
+typedef struct {
+  const char *name;
+  const char *input;
+  const char *output[8];
+} Fixture;
+
+static const Fixture expand_fixtures[] = {
+  { "empty-string", "", { NULL } },
+  { "no-vars", "Test no vars", { "Test no vars", NULL } },
+  { "only-var", "${oh}", { "marmalade", NULL } },
+  { "only-vars", "${oh}${oh}", { "marmalade", "marmalade", NULL } },
+  { "simple", "Test ${oh} suffix", { "Test ", "marmalade", " suffix", NULL } },
+  { "extra-dollar", "Te$st ${oh} suffix", { "Te$st ", "marmalade", " suffix", NULL } },
+  { "extra-brace", "Te{st ${oh} suffix", { "Te{st ", "marmalade", " suffix", NULL } },
+  { "no-ending", "Test ${oh} su${ffix", { "Test ", "marmalade", " su${ffix", NULL } },
+  { "extra-dollar-after", "Test ${oh} su${ff$ix", { "Test ", "marmalade", " su${ff$ix", NULL } },
+  { "unknown", "Test ${unknown} suffix", { "Test ", "${unknown}", " suffix", NULL } },
+  { "escaped", "Test \\${oh} ${oh} suffix", { "Test ", "${oh}", " ", "marmalade", " suffix", NULL } },
+  { "dash", "Test ${oh_dash} suffix", { "Test ", "dash-marmalade", " suffix", NULL } },
+  { "lots", "Oh ${oh} says Scruffy ${empty} the ${Scruffy}",
+      { "Oh ", "marmalade", " says Scruffy ", " the ", "janitor", NULL }
+  },
+  { "unsupported-var", "${ig.nore} ${💩} ${Kōhī}", { "${ig.nore} ${💩} ${Kōhī}" } },
+  { "var-in-string", "te${oh}st", { "te", "marmalade", "st" } },
+  { "var-in-var-string", "te${test${oh}st", { "te${test", "marmalade", "st" } },
+};
+
+static void
+test_expand (TestCase *tc,
+             gconstpointer data)
+{
+  const Fixture *fixture = data;
+  GBytes *input;
+  GList *output;
+  GList *l;
+  int i;
+
+  input = g_bytes_new_static (fixture->input, strlen (fixture->input));
+
+  output = cockpit_template_expand (input, lookup_table, tc->variables);
+  g_bytes_unref (input);
+
+  for (i = 0, l = output; l && fixture->output[i] != NULL; i++, l = g_list_next (l))
+    cockpit_assert_bytes_eq (l->data, fixture->output[i], -1);
+  g_assert_cmpint (g_list_length (output), ==, i);
+
+  g_list_free_full (output, (GDestroyNotify)g_bytes_unref);
+}
+
+int
+main (int argc,
+      char *argv[])
+{
+  gchar *name;
+  int i;
+
+  cockpit_test_init (&argc, &argv);
+
+  for (i = 0; i < G_N_ELEMENTS (expand_fixtures); i++)
+    {
+      name = g_strdup_printf ("/template/expand/%s", expand_fixtures[i].name);
+      g_test_add (name, TestCase, expand_fixtures + i, setup, test_expand, teardown);
+      g_free (name);
+    }
+
+  return g_test_run ();
+}

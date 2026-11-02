@@ -1,0 +1,114 @@
+/*
+ * Copyright (C) 2015 Red Hat, Inc.
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ */
+
+#include "config.h"
+
+/* This gets logged as part of the (more verbose) protocol logging */
+#ifdef G_LOG_DOMAIN
+#undef G_LOG_DOMAIN
+#endif
+#define G_LOG_DOMAIN "cockpit-protocol"
+
+#include "cockpitsystem.h"
+
+#include <glib/gstdio.h>
+
+#include <systemd/sd-login.h>
+
+#include <sys/types.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+
+static const gchar *os_release_fields[] = {
+  "NAME",
+  "VERSION",
+  "ID",
+  "VERSION_ID",
+  "PRETTY_NAME",
+  "VARIANT",
+  "VARIANT_ID",
+  "CPE_NAME",
+  "DOCUMENTATION_URL",
+  NULL
+};
+
+const gchar **
+cockpit_system_os_release_fields (void)
+{
+  return os_release_fields;
+}
+
+GHashTable *
+cockpit_system_load_os_release (void)
+{
+  GError *error = NULL;
+  GHashTable *result = NULL;
+  gchar *contents = NULL;
+  gsize len;
+  gchar **lines = NULL;
+  guint n;
+  gchar *line, *val;
+
+  g_file_get_contents ("/etc/os-release", &contents, &len, &error);
+
+  if (g_error_matches (error, G_FILE_ERROR, G_FILE_ERROR_NOENT))
+    {
+      g_clear_error (&error);
+      g_file_get_contents ("/usr/lib/os-release", &contents, &len, &error);
+    }
+
+  if (error)
+    {
+      g_message ("error loading contents of os-release: %s", error->message);
+      goto out;
+    }
+
+  result = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+
+  lines = g_strsplit (contents, "\n", -1);
+  for (n = 0; lines != NULL && lines[n] != NULL; n++)
+    {
+      line = lines[n];
+      val = strchr (line, '=');
+
+      if (val)
+        {
+          *val = '\0';
+          val++;
+
+          /* Remove quotes from value */
+          len = strlen (val);
+          if (len && val[0] == '\"' && val[len - 1] == '\"')
+            {
+              val[len - 1] = '\0';
+              val++;
+            }
+
+          g_hash_table_replace (result, line, val);
+        }
+      else
+        {
+          g_free (line);
+        }
+    }
+
+ out:
+  g_clear_error (&error);
+  g_free (lines);
+  g_free (contents);
+
+  return result;
+}
+
+void
+cockpit_setenv_check (const char *variable,
+                      const char *value,
+                      gboolean overwrite)
+{
+  if (!g_setenv (variable, value, overwrite))
+    g_error("could not set $%s to %s", variable, value);
+}
