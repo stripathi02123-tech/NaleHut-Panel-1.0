@@ -1,0 +1,16 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
+:root {
+    --ct-color-host-accent: #73ba25 !important;
+}
+
+#badge {
+    inline-size: 5em;
+    block-size: 5em;
+    background-image: url("square-hicolor.svg");
+    background-size: contain;
+    background-repeat: no-repeat;
+}
+
+#brand::before {
+    content: "${NAME}";
+}

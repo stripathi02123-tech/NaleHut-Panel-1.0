@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+fedorabrandingdir = $(datadir)/cockpit/branding/fedora
+
+dist_fedorabranding_DATA = \
+	src/branding/fedora/branding.css \
+	$(NULL)
+
+# Opportunistically use fedora-logos
+# FIXME: Drop anaconda-branding-compat.css once https://forge.fedoraproject.org/design/packages/pulls/4 is released
+install-data-hook::
+	ln -sTfr $(DESTDIR)/usr/share/pixmaps/system-logo-white.png $(DESTDIR)$(fedorabrandingdir)/logo.png
+	ln -sTfr $(DESTDIR)/usr/share/pixmaps/fedora-logo-sprite.png $(DESTDIR)$(fedorabrandingdir)/apple-touch-icon.png
+	ln -sTfr $(DESTDIR)/etc/favicon.png $(DESTDIR)$(fedorabrandingdir)/favicon.ico
+	ln -sTfr $(DESTDIR)/usr/share/anaconda/pixmaps/webui.css $(DESTDIR)$(fedorabrandingdir)/anaconda-branding.css
+	ln -sTfr $(DESTDIR)/usr/share/anaconda/pixmaps/fedora-webui.css $(DESTDIR)$(fedorabrandingdir)/anaconda-branding-compat.css
+	ln -sTfr $(DESTDIR)/usr/share/anaconda/pixmaps/webui-header-logo.png $(DESTDIR)$(fedorabrandingdir)/webui-header-logo.png
